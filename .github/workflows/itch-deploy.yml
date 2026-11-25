@@ -1,0 +1,72 @@
+name: itch.io Butler 自动增量推送
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'itch.io 发布渠道名（默认 html5）'
+        required: false
+        default: 'html5'
+
+permissions:
+  contents: read
+
+jobs:
+  butler-push:
+    name: 构建并增量推送至 itch.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 校验 itch.io Secrets 配置
+        id: check
+        env:
+          ITCH_API_KEY: ${{ secrets.ITCH_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET || secrets.ITCH_TARGET }}
+        run: |
+          if [ -z "${ITCH_API_KEY}" ] || [ -z "${ITCH_TARGET}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ 尚未配置 ITCH_API_KEY 或 ITCH_TARGET（形如 yourname/game-slug），已跳过本次 itch.io 推送。"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 配置 Node.js 22
+        if: steps.check.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 构建并打包分发包
+        if: steps.check.outputs.configured == 'true'
+        env:
+          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'star-dash-v1' }}
+          VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID || secrets.GA4_MEASUREMENT_ID }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npm ci || npm install
+          npm run build
+          node scripts/package-portal.mjs --portal=generic
+
+      - name: 下载并安装官方 butler CLI
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler-bin
+          chmod +x butler-bin/butler
+          ./butler-bin/butler -V
+
+      - name: 执行 butler push 增量推送
+        if: steps.check.outputs.configured == 'true'
+        env:
+          BUTLER_API_KEY: ${{ secrets.ITCH_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET || secrets.ITCH_TARGET }}
+          ITCH_CHANNEL: ${{ inputs.channel || 'html5' }}
+        run: |
+          ./butler-bin/butler push dist-portal.zip "${ITCH_TARGET}:${ITCH_CHANNEL}" --userversion "${GITHUB_REF_NAME}"

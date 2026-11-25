@@ -1,0 +1,85 @@
+name: 自动构建、部署 GitHub Pages 并打包门户分发包
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+    inputs:
+      portal:
+        description: '门户打包目标（generic / poki / crazygames / telegram）'
+        required: false
+        default: 'generic'
+        type: choice
+        options:
+          - generic
+          - poki
+          - crazygames
+          - telegram
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages-deploy'
+  cancel-in-progress: false
+
+jobs:
+  build-and-package:
+    name: 构建校验与生成 dist-portal.zip
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 安装依赖
+        run: npm ci || npm install
+
+      - name: 运行自动化单元测试与安全扫描
+        run: npm test
+
+      - name: 执行生产构建（注入公开运行配置）
+        env:
+          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'star-dash-v1' }}
+          VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID || secrets.GA4_MEASUREMENT_ID }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}
+          VITE_PORTAL_TARGET: ${{ inputs.portal || 'auto' }}
+        run: npm run build
+
+      - name: 打包符合 Poki / CrazyGames 体积规范的 dist-portal.zip
+        run: node scripts/package-portal.mjs --portal=${{ inputs.portal || 'generic' }}
+
+      - name: 上传 dist-portal.zip 分发包（供提交 Poki / CrazyGames）
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-portal-${{ inputs.portal || 'generic' }}
+          path: dist-portal.zip
+          retention-days: 30
+
+      - name: 配置 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传 GitHub Pages 静态产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+
+  deploy-pages:
+    name: 部署至 GitHub Pages（同步供 Cloudflare / Telegram 调用）
+    needs: build-and-package
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 发布至 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
