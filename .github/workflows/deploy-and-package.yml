@@ -64,8 +64,10 @@ jobs:
           path: dist-portal.zip
           retention-days: 30
 
-      - name: 配置 GitHub Pages
+      - name: 配置并自动启用 GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: 上传 GitHub Pages 静态产物
         uses: actions/upload-pages-artifact@v3
