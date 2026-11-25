@@ -1,11 +1,10 @@
-# 🏺 INVESTITURE: Relic Forge（封神锻炉：天劫破阵）— 100% Serverless 旗舰休闲游戏
+# 🏺 INVESTITURE: Relic Forge（封神锻炉）— V1.0 核心玩法 MVP（100% Serverless）
 
-本作是面向全球市场的东方商周神话原创旗舰休闲策略肉鸽游戏（**Phaser 4 + Vite**），全量程序化美术与实时 Web Audio 东方古典民乐合成，门户压缩包远小于 **2MB**，非洲/东南亚弱网手机也能秒开：
-- **黄金竖屏双区玩法**：上半屏（42%）商周古战场（全封闭青铜战盔战将守卫青铜阵门，抗击分波水墨妖魔与每 5 波巨型青铜妖王）；下半屏（58%）5×5 商周青铜八卦锻炉 + 无倒计时三选一五行拼图（手机单指拖拽自动上移 60px 防遮挡 + 落点与消行高亮预览）；
-- **五行炼宝神通 + 天道共鸣**：火尖枪穿透火焰束、打神鞭多目标连锁闪电、番天印天降范围砸击（震屏 + 60ms 顿帧）、混天绫全屏击退减速波、青莲阵门回血护盾；单次消除 ≥2 行/列触发「天道共鸣」双倍威力爆发；
-- **肉鸽「元始敕令」与反套路「天劫异变」**：满灵气弹出 3 张青铜竹简强化卡（支持激励广告重抽）；每 3 波触发八卦盘顺时针旋转 90°、紫雷封印 2 格（旁消解锁）或高风险「真假灵丹」异变；
-- **双语 `EN / 中` 实时切换 + 4 尊封神战将**：哪吒（免费）、杨戬、雷震子、姜子牙各自拥有真实生效的局内被动，精魄永久解锁并预留新加坡 Supabase 同步；
-- **零成本全球多平台架构**：兼容 Playgama Bridge / CrazyGames / GameMonetize / GamePix / Telegram WebApp + AdsGram / Poki / itch.io，100% GitHub Pages + GitHub Actions + 新加坡 Supabase + GA4，零独立服务器运维成本。
+本版本为 **「第 1 步核心玩法 MVP」**，专注极致打磨 **「8 列 1:1 对齐 × 同步回合制 × 落子定属性 × 横竖策略分化」** 的核心消除战斗手感：
+- **黄金 8 列 1:1 对齐竖屏布局**：上方约 30% 为 8 条纵道（Lane 1~8）商周古战场（佩戴全封闭青铜战盔与红氅的哪吒背影剪影守卫阵门）；下方约 70% 为 8×8 青铜八卦锻炉 + 底部 3 个经典 Block Blast 拼图槽（无倒计时，放完 3 块自动刷新，单指拖拽自动上移 `65px` 防遮挡）；
+- **同步回合制 + 落点预警联动**：玩家每成功落子 1 块，上方妖魔才统一推进 1 格（不放块不动，零时间焦虑）；手指悬停即将消行/消列的位置时，上方对应纵道或前排区域同步亮起攻击预警光带；
+- **落子定属性 & 横竖策略分化**：火 Flame（朱砂红+火焰纹）/ 金 Thunder（流光金+雷纹）/ 水 Tide（玄青色+水波纹），消列精准轰穿对应纵道、消行横扫 8 道前排，同时消除 ≥2 行/列触发 `RESONANCE ×2!` 共鸣双倍威力与震屏；
+- **精简 10 波通关循环**：3 种清晰区分的水墨妖魔 + 第 10 波关底巨型青铜妖王 Boss，1 秒极速重开（`PLAY AGAIN`）；顶部附带轻量 `EN / 中` 切换开关。
 
 ---
 
@@ -16,26 +15,22 @@ game-factory/
 ├── .github/workflows/
 │   ├── deploy-and-package.yml   # 推送 main 自动测试、构建、部署 GitHub Pages + 打包 dist-portal.zip
 │   ├── itch-deploy.yml          # itch.io butler push 自动增量推送工作流
-│   └── daily-patrol.yml         # 每天北京时间 08:30 拉取 GA4 中文日报 + 清理 Supabase 异常高分
-├── supabase/
-│   └── game_factory_schema_rls.sql  # 新加坡 Supabase 独立表（gf_* 前缀）与防刷分 RLS/RPC
+│   └── daily-patrol.yml         # 每日 GA4 中文日报 + 新加坡 Supabase 巡检保活
 ├── scripts/
-│   ├── package-portal.mjs       # 打包零外链、全相对路径且远小于 2MB 的通用门户包 dist-portal.zip
-│   └── daily-patrol.mjs         # 零依赖 GA4 日报拉取 + Supabase 反作弊清理与保活脚本
+│   ├── package-portal.mjs       # 打包零外链通用轻量分发包 dist-portal.zip（~0.38 MB）
+│   └── daily-patrol.mjs         # GA4 日报与 Supabase 保活巡检脚本
 ├── src/
-│   ├── i18n.js                  # 默认英文 + 顶部 EN / 中 实时双语切换字典（零日文字符）
-│   ├── config.js                # 五行配置、4 尊封神战将、8 张元始敕令卡池与 5×5 八卦锻炉参数
-│   ├── platform-bridge.js       # 零成本全球多平台 SDK（Playgama/CrazyGames/GameMonetize/GamePix/Telegram AdsGram/Poki）
-│   ├── audio/synth-sfx.js       # Web Audio 古筝五声音阶、商周编钟、琵琶急奏与唐代战鼓实时合成
+│   ├── i18n.js                  # 默认简洁英文 + 顶部轻量 EN / 中 切换字典（零日文字符）
+│   ├── config.js                # 8 纵道与 8×8 阵盘 1:1 对齐参数、dragLiftY=65、火/金/水三属性与 10 种拼图
+│   ├── audio/synth-sfx.js       # Web Audio 古筝五声音阶、商周编钟、琵琶急奏与唐代战鼓合成
 │   ├── scenes/
-│   │   ├── BootScene.js         # 全套商周青铜纹样、全封闭青铜战盔战将与水墨妖魔程序化纹理
-│   │   ├── MenuScene.js         # 双语主界面、EN / 中 切换、4 尊封神战将解锁面板与全球封神榜
-│   │   ├── GameScene.js         # 竖屏双区商周古战场 + 5×5 八卦锻炉 + 肉鸽敕令 + 天劫异变 + 太乙真火复活
-│   │   └── ResultScene.js       # 双语结算页（精魄翻倍激励广告 + 全球封神榜 TOP 3）
-│   └── main.js                  # Phaser 4 入口、iPhone Retina 1:1 触控坐标同步与广告静音联动
+│   │   ├── BootScene.js         # 全套商周青铜三属性方块、哪吒全封闭战盔背影与 3+1 水墨妖魔程序化美术
+│   │   ├── MenuScene.js         # 极简主界面（EN / 中、SFX、三属性图解、一键 PLAY 开局）
+│   │   └── GameScene.js         # 核心 8 列对齐同步回合制战斗、落点纵道预警联动、10 波循环与 1 秒重开
+│   └── main.js                  # Phaser 4 入口、iPhone Retina (DPR=3) 触控映射与防页面滚动
 └── tests/
     ├── game-factory.test.mjs    # 自动化单元测试、红线扫描与移动端 E2E 联动入口
-    └── mobile-touch.e2e.py      # iPhone 390×844 DPR=3 点击开局、双语切换与单指拖拽 5×5 消行端到端验收
+    └── mobile-touch.e2e.py      # iPhone 390×844 DPR=3 触摸开局、同步推进 1 格与消列精准命中 E2E 验收
 ```
 
 ---

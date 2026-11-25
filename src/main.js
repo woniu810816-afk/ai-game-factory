@@ -6,9 +6,8 @@ import { synthAudio } from './audio/synth-sfx.js';
 import { BootScene } from './scenes/BootScene.js';
 import { MenuScene } from './scenes/MenuScene.js';
 import { GameScene } from './scenes/GameScene.js';
-import { ResultScene } from './scenes/ResultScene.js';
 
-// 符合全球各 H5 门户审核规范：阻止空格键、方向键和滚轮触发宿主页面滚动
+// 阻止空格键、方向键和滚轮触发宿主页面滚动
 window.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
 window.addEventListener('keydown', (e) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', ' '].includes(e.key)) {
@@ -16,33 +15,29 @@ window.addEventListener('keydown', (e) => {
   }
 }, { passive: false });
 
-// 阻止 iOS Safari 页面级下拉橡皮筋滚动，但不拦截 canvas 内部触控事件传递
+// 阻止 iOS Safari 页面级下拉橡皮筋滚动，不拦截 canvas 内部触摸
 document.addEventListener('touchmove', (e) => {
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
 
-// 暴露轻量只读运行态快照，便于 iPhone 竖屏触摸拖拽验收测试与排障（绝不含任何密钥）
+// 轻量只读运行态快照（供 iPhone 竖屏自动化验收使用，绝不含任何密钥）
 window.__GAME_STATE__ = {
   scene: 'BootScene',
   lang: i18n.lang,
   score: 0,
   wave: 1,
+  turnCount: 0,
   gateHp: 100,
-  gateMaxHp: 100,
-  essenceBalance: 0,
-  runEssence: 0,
-  selectedWarlord: 'nezha',
-  unlockedWarlords: ['nezha'],
-  soundEnabled: true,
-  leaderboardOpen: false,
+  gateShield: 0,
   linesCleared: 0,
   piecesPlaced: 0,
-  occupiedCells: 0,
   dragging: false,
-  dragLiftY: GAME_DESIGN.board.dragLiftY,
+  isEnded: false,
+  lastCast: null,
   board: [],
   tray: [],
-  revived: false
+  enemies: [],
+  soundEnabled: true
 };
 
 const gameConfig = {
@@ -50,7 +45,7 @@ const gameConfig = {
   parent: 'app',
   width: GAME_DESIGN.width,
   height: GAME_DESIGN.height,
-  backgroundColor: '#0b0a10',
+  backgroundColor: '#0b0a0f',
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
@@ -64,7 +59,7 @@ const gameConfig = {
       capture: true
     }
   },
-  scene: [BootScene, MenuScene, GameScene, ResultScene]
+  scene: [BootScene, MenuScene, GameScene]
 };
 
 const game = new Phaser.Game(gameConfig);
@@ -88,37 +83,25 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', syncCanvasMetrics);
 }
 
-// 捕获阶段在每次触摸/点击前刷新 canvasBounds，彻底杜绝 iOS Safari 动态工具栏导致的热区偏移
+// 捕获阶段每次触摸前刷新 canvasBounds，彻底杜绝 iOS Safari 动态地址栏引起的热区偏移
 window.addEventListener('touchstart', () => {
-  try {
-    game.scale?.updateBounds?.();
-  } catch (_) {}
+  try { game.scale?.updateBounds?.(); } catch (_) {}
 }, { capture: true, passive: true });
 window.addEventListener('pointerdown', () => {
-  try {
-    game.scale?.updateBounds?.();
-  } catch (_) {}
+  try { game.scale?.updateBounds?.(); } catch (_) {}
 }, { capture: true, passive: true });
 
-// 广告期间自动静音并暂停游戏主循环，广告结束立即恢复
 platformBridge.setAudioPauseHandlers({
   onPause: () => {
     synthAudio.setAdMuted(true);
-    try {
-      game.sound?.setMute?.(true);
-      game.loop?.sleep?.();
-    } catch (_) {}
+    try { game.loop?.sleep?.(); } catch (_) {}
   },
   onResume: () => {
     synthAudio.setAdMuted(false);
-    try {
-      game.sound?.setMute?.(!synthAudio.enabled);
-      game.loop?.wake?.();
-    } catch (_) {}
+    try { game.loop?.wake?.(); } catch (_) {}
   }
 });
 
-// 页面切入后台自动静音
 document.addEventListener('visibilitychange', () => {
   synthAudio.setAdMuted(document.hidden);
 });
