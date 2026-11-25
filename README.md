@@ -1,10 +1,11 @@
-# 🎮 Celestial Rush — 面向欧美市场的东方玄幻休闲街机游戏（100% Serverless）
+# 🏺 INVESTITURE: Relic Forge（封神锻炉：天劫破阵）— 100% Serverless 旗舰休闲游戏
 
-本项目基于标准化 HTML5 休闲游戏母版（**Phaser 4 + Vite**）升级为首款面向欧美 Poki / CrazyGames 市场的高留存东方玄幻休闲街机游戏 **《Celestial Rush》**：
-- **零外部版权素材程序化美术**：全封闭古风战盔行者、双旋转风火轮、青铜雷纹阵、陨星、发光金玉（Spirit Jade）、护体金钟（Shield）与吸宝灵符（Magnet）；
-- **实时 Web Audio 古风音效**：五声音阶古风拨弦（随连击升调）与低频战鼓动态节奏；
-- **核心爽感与商业化留存闭环**：单指跟手滑动、Near-Miss 擦身加分、10 连击 5 秒无敌 FEVER 撞碎（微震+顿帧）、4 款 TRAILS 流光拖尾皮肤灵玉解锁、`REVIVE (AD)` 原地复活与 `2X JADE (AD)` 双倍灵玉激励广告闭环；
-- **100% Serverless 架构**：GitHub Pages / Cloudflare Pages + GitHub Actions + 新加坡 Supabase 防刷分排行榜/云存档 + GA4 核心事件上报，零独立服务器运维成本。
+本作是面向全球市场的东方商周神话原创旗舰休闲策略肉鸽游戏（**Phaser 4 + Vite**），全量程序化美术与实时 Web Audio 东方古典民乐合成，门户压缩包远小于 **2MB**，非洲/东南亚弱网手机也能秒开：
+- **黄金竖屏双区玩法**：上半屏（42%）商周古战场（全封闭青铜战盔战将守卫青铜阵门，抗击分波水墨妖魔与每 5 波巨型青铜妖王）；下半屏（58%）5×5 商周青铜八卦锻炉 + 无倒计时三选一五行拼图（手机单指拖拽自动上移 60px 防遮挡 + 落点与消行高亮预览）；
+- **五行炼宝神通 + 天道共鸣**：火尖枪穿透火焰束、打神鞭多目标连锁闪电、番天印天降范围砸击（震屏 + 60ms 顿帧）、混天绫全屏击退减速波、青莲阵门回血护盾；单次消除 ≥2 行/列触发「天道共鸣」双倍威力爆发；
+- **肉鸽「元始敕令」与反套路「天劫异变」**：满灵气弹出 3 张青铜竹简强化卡（支持激励广告重抽）；每 3 波触发八卦盘顺时针旋转 90°、紫雷封印 2 格（旁消解锁）或高风险「真假灵丹」异变；
+- **双语 `EN / 中` 实时切换 + 4 尊封神战将**：哪吒（免费）、杨戬、雷震子、姜子牙各自拥有真实生效的局内被动，精魄永久解锁并预留新加坡 Supabase 同步；
+- **零成本全球多平台架构**：兼容 Playgama Bridge / CrazyGames / GameMonetize / GamePix / Telegram WebApp + AdsGram / Poki / itch.io，100% GitHub Pages + GitHub Actions + 新加坡 Supabase + GA4，零独立服务器运维成本。
 
 ---
 
@@ -14,26 +15,27 @@
 game-factory/
 ├── .github/workflows/
 │   ├── deploy-and-package.yml   # 推送 main 自动测试、构建、部署 GitHub Pages + 打包 dist-portal.zip
-│   ├── itch-deploy.yml          # 预留 itch.io butler push 自动增量推送工作流
+│   ├── itch-deploy.yml          # itch.io butler push 自动增量推送工作流
 │   └── daily-patrol.yml         # 每天北京时间 08:30 拉取 GA4 中文日报 + 清理 Supabase 异常高分
 ├── supabase/
 │   └── game_factory_schema_rls.sql  # 新加坡 Supabase 独立表（gf_* 前缀）与防刷分 RLS/RPC
 ├── scripts/
-│   ├── package-portal.mjs       # 打包符合 Poki / CrazyGames 体积规范的 dist-portal.zip
+│   ├── package-portal.mjs       # 打包零外链、全相对路径且远小于 2MB 的通用门户包 dist-portal.zip
 │   └── daily-patrol.mjs         # 零依赖 GA4 日报拉取 + Supabase 反作弊清理与保活脚本
 ├── src/
-│   ├── config.js                # 运行时配置与 4 款 TRAILS 流光拖尾皮肤定义（零硬编码密钥）
-│   ├── platform-bridge.js       # 统一商业化（Poki/CrazyGames/Telegram）+ GA4 + Supabase 桥接层
-│   ├── audio/synth-sfx.js       # Web Audio 五声音阶古风拨弦 + 动态低频战鼓实时合成引擎
+│   ├── i18n.js                  # 默认英文 + 顶部 EN / 中 实时双语切换字典（零日文字符）
+│   ├── config.js                # 五行配置、4 尊封神战将、8 张元始敕令卡池与 5×5 八卦锻炉参数
+│   ├── platform-bridge.js       # 零成本全球多平台 SDK（Playgama/CrazyGames/GameMonetize/GamePix/Telegram AdsGram/Poki）
+│   ├── audio/synth-sfx.js       # Web Audio 古筝五声音阶、商周编钟、琵琶急奏与唐代战鼓实时合成
 │   ├── scenes/
-│   │   ├── BootScene.js         # 启动、程序化东方玄幻矢量纹理生成、SDK 初始化与云存档拉取
-│   │   ├── MenuScene.js         # 全英文主界面、TRAILS 流光皮肤面板、静音开关与全球排行榜
-│   │   ├── GameScene.js         # 《Celestial Rush》核心玩法（跟手滑动、Near-Miss、10连击 FEVER）
-│   │   └── ResultScene.js       # 结算界面（REVIVE (AD) 原地复活、2X JADE (AD) 双倍灵玉、全球榜）
-│   └── main.js                  # Phaser 4 入口、iPhone Retina 1:1 坐标同步与广告暂停/静音联动
+│   │   ├── BootScene.js         # 全套商周青铜纹样、全封闭青铜战盔战将与水墨妖魔程序化纹理
+│   │   ├── MenuScene.js         # 双语主界面、EN / 中 切换、4 尊封神战将解锁面板与全球封神榜
+│   │   ├── GameScene.js         # 竖屏双区商周古战场 + 5×5 八卦锻炉 + 肉鸽敕令 + 天劫异变 + 太乙真火复活
+│   │   └── ResultScene.js       # 双语结算页（精魄翻倍激励广告 + 全球封神榜 TOP 3）
+│   └── main.js                  # Phaser 4 入口、iPhone Retina 1:1 触控坐标同步与广告静音联动
 └── tests/
-    ├── game-factory.test.mjs    # 自动化单元测试、安全红线扫描与移动端 E2E 联动入口
-    └── mobile-touch.e2e.py      # iPhone 竖屏（390x844, DPR=3）触摸点击与单指滑动验收测试
+    ├── game-factory.test.mjs    # 自动化单元测试、红线扫描与移动端 E2E 联动入口
+    └── mobile-touch.e2e.py      # iPhone 390×844 DPR=3 点击开局、双语切换与单指拖拽 5×5 消行端到端验收
 ```
 
 ---

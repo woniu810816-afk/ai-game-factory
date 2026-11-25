@@ -1,15 +1,29 @@
 import Phaser from 'phaser';
-import { GAME_DESIGN, getTrailSkin } from '../config.js';
+import {
+  GAME_DESIGN,
+  ELEMENTS,
+  ELEMENT_KEYS,
+  PIECE_SHAPES,
+  DECREE_POOL,
+  getWarlord
+} from '../config.js';
+import { i18n } from '../i18n.js';
 import { platformBridge } from '../platform-bridge.js';
 import { synthAudio } from '../audio/synth-sfx.js';
 
+const BOARD_SIZE = GAME_DESIGN.board.size;
+const CELL_SIZE = GAME_DESIGN.board.cellSize;
+const ORIGIN_X = GAME_DESIGN.board.originX;
+const ORIGIN_Y = GAME_DESIGN.board.originY;
+const DRAG_LIFT_Y = GAME_DESIGN.board.dragLiftY;
+const TRAY_Y = GAME_DESIGN.board.trayY;
+const TRAY_SLOTS_X = GAME_DESIGN.board.traySlotsX;
+
 /**
- * 《Celestial Rush》核心街机玩法场景（全英文 UI + 东方玄幻高爽感机制）：
- * - 单指按住左右跟手滑动（完整保留 iPhone Retina 坐标映射）+ 电脑键盘（←/→、A/D、P 暂停、M 静音）
- * - 随分数平滑提速、动态低频战鼓 + 五声音阶古风升调拨弦
- * - 擦身而过（Near-Miss）金色飘字 "+50 NEAR MISS!" 与火花反馈
- * - 10 连击自动触发 5 秒无敌疾驰（FEVER MODE），直接撞碎青铜雷纹阵/陨星并触发微震 + 顿帧反馈
- * - 护体金钟（Shield）+ 吸宝灵符（Magnet）+ 流光拖尾皮肤（TRAILS）实时呈现
+ * 《INVESTITURE: Relic Forge / 封神锻炉：天劫破阵》核心双区战斗与锻炉场景
+ * - 上半屏（42%）：商周古战场、全封闭青铜战盔战将、青铜阵门血条与分波水墨妖魔（每 5 波青铜妖王）
+ * - 下半屏（58%）：5×5 商周青铜八卦锻炉 + 无倒计时三选一五行拼图槽（单指拖拽自动上移 60px 防遮挡）
+ * - 五行炼宝神通 + 天道共鸣（≥2 行/列双倍爆发）+ 肉鸽元始敕令三选一 + 每 3 波天劫异变 + 濒死太乙真火复活
  */
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -18,519 +32,1484 @@ export class GameScene extends Phaser.Scene {
 
   init(data) {
     const save = platformBridge.getLocalSave();
-    this.score = Math.max(0, Math.round(Number(data?.score || 0)));
-    this.runJade = Math.max(0, Math.round(Number(data?.runJade || 0)));
-    this.revived = Boolean(data?.revived);
-    this.trailSkin = getTrailSkin(data?.trailId || save.selectedTrail);
+    this.warlord = getWarlord(data?.warlordId || save.selectedWarlord);
 
-    this.combo = Math.max(0, Number(data?.combo || 0));
-    this.feverStreak = Math.max(0, Number(data?.feverStreak || 0));
-    this.nearMissCount = Math.max(0, Number(data?.nearMissCount || 0));
-    this.feverCount = Math.max(0, Number(data?.feverCount || 0));
-    this.elapsedMs = Math.max(0, Number(data?.elapsedMs || 0));
+    this.score = 0;
+    this.wave = 1;
+    this.slainCount = 0;
+    this.runEssence = 0;
+    this.linesCleared = 0;
+    this.piecesPlaced = 0;
+    this.elapsedMs = 0;
+    this.revived = false;
 
-    // 复活自带护体金钟 + 2.4 秒无敌清屏保护
-    this.hasShield = this.revived;
-    this.invulnerableUntil = this.revived ? 2400 : 0;
-    this.magnetRemainingMs = 0;
-    this.isFever = false;
-    this.feverRemainingMs = 0;
+    this.gateMaxHp = 100;
+    this.gateHp = 100;
+    this.gateShield = 0;
+
+    // 灵气条（满槽弹出元始敕令三选一）
+    this.spiritQi = 0;
+    this.spiritQiMax = 90;
+    this.decrees = {}; // { decreeId: count }
+
+    // 波次生成状态
+    this.waveEnemiesTotal = 6;
+    this.waveEnemiesSpawned = 0;
+    this.spawnTimerMs = 0;
+    this.waveClearPauseMs = 0;
+
+    // 5×5 八卦锻炉矩阵：null | { element: string, sprite: Image } | { sealed: true, sprite: Image }
+    this.board = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+    this.trayPieces = [null, null, null]; // 每项：{ shape, element, isPill, container, slotIndex }
+
+    // 单指拖拽状态
+    this.dragState = null; // { slotIndex, piece, previewContainer, hoverRow, hoverCol, valid }
+    this.isPaused = false;
+    this.modalActive = false; // 敕令/复活/暂停弹窗期间冻结战场
+    this.isEnded = false;
     this.hitStopMs = 0;
 
-    this.isPaused = false;
-    this.isEnded = false;
-    this.pointerTargetX = null;
-
-    this.motesBg = [];
-    this.speedLines = [];
+    this.enemies = [];
     this.fxParticles = [];
-    this.collectSpawnAcc = 0;
-    this.obstacleSpawnAcc = 0;
-    this.trailEmitAcc = 0;
-    this.distScoreAcc = 0;
+    this.fogBands = [];
   }
 
   create() {
-    const { width, height } = GAME_DESIGN;
-    this.cameras.main.setBackgroundColor('#090714');
+    const { width } = GAME_DESIGN;
+    this.cameras.main.setBackgroundColor('#0b0a10');
+    try { this.scale?.updateBounds?.(); } catch (_) {}
+
+    this._buildBattlefield();
+    this._buildBaguaForge();
+    this._buildHud();
+    this._bindDragAndKeys();
+
+    // 初始发一组 3 块五行拼图
+    this._refillTray();
+
     try {
-      this.scale?.updateBounds?.();
+      platformBridge.gameplayStart({ warlord_id: this.warlord.id });
+      synthAudio.startWarDrums(false);
     } catch (_) {}
 
-    // 玄夜流云与星尘背景
-    this.motesBg = [];
-    for (let i = 0; i < 60; i++) {
-      const isGold = i % 3 === 0;
-      const m = this.add.circle(
-        Phaser.Math.Between(0, width),
-        Phaser.Math.Between(0, height),
-        Phaser.Math.FloatBetween(1.1, 2.5),
-        isGold ? 0xfbbf24 : 0x818cf8,
-        Phaser.Math.FloatBetween(0.18, 0.72)
-      );
-      m.baseSpeed = Phaser.Math.FloatBetween(95, 240);
-      this.motesBg.push(m);
-    }
-
-    // 狂热模式高速流线（默认隐藏）
-    this.speedLines = [];
-    for (let i = 0; i < 14; i++) {
-      const line = this.add.rectangle(
-        Phaser.Math.Between(16, width - 16),
-        Phaser.Math.Between(0, height),
-        2.5,
-        Phaser.Math.Between(55, 120),
-        0xfbbf24,
-        0
-      ).setDepth(3);
-      line.speed = Phaser.Math.Between(780, 1180);
-      this.speedLines.push(line);
-    }
-
-    // Fever 屏幕金红光框
-    this.feverFrame = this.add.rectangle(width / 2, height / 2, width - 8, height - 8, 0x000000, 0).setDepth(18);
-    this.feverFrame.setStrokeStyle(6, 0xf97316, 0);
-
-    // 玩家双风火轮（独立渲染于角色脚下，高速旋转并按皮肤配色染色）
-    this.leftWheel = this.add.image(width / 2 - 16, height - 118, 'windFireWheel').setScale(0.78).setDepth(7);
-    this.rightWheel = this.add.image(width / 2 + 16, height - 118, 'windFireWheel').setScale(0.78).setDepth(7);
-    this.leftWheel.setTint(this.trailSkin.wheelTint);
-    this.rightWheel.setTint(this.trailSkin.wheelTint);
-
-    // 玩家行者实体（物理碰撞盒偏紧以优化手感和擦身判定）
-    this.player = this.physics.add.sprite(width / 2, height - 154, 'walker').setDepth(9);
-    this.player.setCollideWorldBounds(true);
-    this.player.body.setSize(34, 48);
-    this.player.body.setOffset(23, 22);
-
-    // 吸宝灵符外环（青金灵光）
-    this.magnetRing = this.add.circle(this.player.x, this.player.y, 58, 0x38bdf8, 0.08).setDepth(6);
-    this.magnetRing.setStrokeStyle(2.2, 0x67e8f9, 0.85);
-    this.magnetRing.setVisible(false);
-
-    // 护体金钟护罩（金色禅钟光环）
-    this.shieldRing = this.add.circle(this.player.x, this.player.y, 48, 0xfbbf24, 0.14).setDepth(10);
-    this.shieldRing.setStrokeStyle(3, 0xfef08a, 0.92);
-    this.shieldRing.setVisible(this.hasShield || this.invulnerableUntil > 0);
-
-    // Fever 烈焰光环
-    this.feverAura = this.add.circle(this.player.x, this.player.y, 56, 0xf97316, 0.2).setDepth(8);
-    this.feverAura.setStrokeStyle(3.5, 0xfef08a, 0.95);
-    this.feverAura.setVisible(false);
-
-    // 物理分组
-    this.collectibles = this.physics.add.group();
-    this.obstacles = this.physics.add.group();
-
-    this.physics.add.overlap(this.player, this.collectibles, this._onCollect, null, this);
-    this.physics.add.overlap(this.player, this.obstacles, this._onHitObstacle, null, this);
-
-    // 顶部 HUD（全英文）
-    this._createHud();
-
-    // 输入：键盘（左右 / A、D / P / ESC / M）+ 手机单指按住滑动
-    this.cursors = this.input.keyboard?.createCursorKeys();
-    this.keyA = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.A);
-    this.keyD = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-    this.input.keyboard?.on('keydown-P', () => this._togglePause());
-    this.input.keyboard?.on('keydown-ESC', () => this._togglePause());
-    this.input.keyboard?.on('keydown-M', () => this._toggleSound());
-
-    // 保留高可靠 pointerdown / pointermove 滑动跟手控制逻辑（与 iPhone Retina 坐标 1:1 对齐）
-    this.input.on('pointerdown', (pointer) => {
-      if (pointer.y > 108 && !this.isPaused && !this.isEnded) {
-        try { synthAudio.ensureContext(); } catch (_) {}
-        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 38, width - 38);
-      }
-    });
-    this.input.on('pointermove', (pointer) => {
-      if (pointer.isDown && pointer.y > 108 && !this.isPaused && !this.isEnded) {
-        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 38, width - 38);
-      }
-    });
-    this.input.on('pointerup', () => {
-      this.pointerTargetX = null;
-    });
-
-    // 通知门户 SDK 与 GA4（上报 game_start）
-    try {
-      platformBridge.gameplayStart({
-        trail_id: this.trailSkin.id,
-        revived: this.revived ? 1 : 0
-      });
-    } catch (_) {}
-
-    // 启动低频战鼓节奏
-    try {
-      synthAudio.setDrumIntensity(0, false);
-      synthAudio.startWarDrums();
-    } catch (_) {}
-
-    if (this.revived) {
-      try { synthAudio.playRevive(); } catch (_) {}
-      this._showFloatingText(width / 2, height / 2 - 48, 'REVIVED! GOLDEN BELL ACTIVE', '#fde047', '22px');
-    }
-
-    // 场景退出时务必停止战鼓循环，防止残留
     this.events.once('shutdown', () => {
       try { synthAudio.stopWarDrums(); } catch (_) {}
     });
 
-    this._updateHud();
+    this._refreshHudAndState();
   }
 
-  _createHud() {
-    const { width } = GAME_DESIGN;
-    const hudBg = this.add.rectangle(width / 2, 52, width, 104, 0x110b22, 0.92).setDepth(20);
-    hudBg.setStrokeStyle(1.5, 0x5b3b1e, 0.9);
+  // =========================================================================
+  // 1. 构建上半屏商周古战场（42%）与下半屏 5×5 青铜八卦锻炉（58%）
+  // =========================================================================
 
-    // 左侧：分数与本局灵玉
-    this.scoreText = this.add.text(18, 14, `SCORE ${this.score}`, {
-      fontSize: '23px',
+  _buildBattlefield() {
+    const { width, battleTop, battleBottom, gateY } = GAME_DESIGN;
+    const battleH = battleBottom - battleTop;
+
+    // 古战场深墨底幕与淡淡青铜地脉线
+    this.add.rectangle(width / 2, battleTop + battleH / 2, width, battleH, 0x110e15, 1).setDepth(0);
+    for (let x = 90; x < width; x += 90) {
+      this.add.rectangle(x, battleTop + battleH / 2, 1, battleH, 0x3b2a1c, 0.25).setDepth(1);
+    }
+
+    // 顶部浓雾翻涌带（水墨妖魔从浓雾中分波次现身）
+    this.fogBands = [];
+    for (let i = 0; i < 6; i++) {
+      const fog = this.add.ellipse(
+        Phaser.Math.Between(30, width - 30),
+        battleTop + Phaser.Math.Between(14, 42),
+        Phaser.Math.Between(160, 260),
+        Phaser.Math.Between(42, 68),
+        0x272030,
+        0.52
+      ).setDepth(2);
+      fog.vx = Phaser.Math.FloatBetween(-18, 18) || 12;
+      this.fogBands.push(fog);
+    }
+
+    // 商周青铜阵门防线
+    this.gateBeam = this.add.rectangle(width / 2, gateY, width - 24, 14, 0x5c3d22, 1).setDepth(5);
+    this.gateBeam.setStrokeStyle(2, 0xd99b38, 0.95);
+
+    // 阵门血条与护盾条
+    this.add.rectangle(width / 2, gateY + 18, 300, 12, 0x1c1917, 0.95).setStrokeStyle(1, 0x78350f, 0.9).setDepth(6);
+    this.gateHpBar = this.add.rectangle(width / 2 - 150, gateY + 18, 300, 10, 0x22c55e).setOrigin(0, 0.5).setDepth(7);
+    this.gateShieldBar = this.add.rectangle(width / 2 - 150, gateY + 18, 0, 4, 0x38bdf8).setOrigin(0, 0.5).setDepth(8);
+    this.gateHpText = this.add.text(width / 2, gateY + 18, '', {
+      fontSize: '11px',
+      fontStyle: 'bold',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5).setDepth(9);
+
+    // 阵门底部中央：佩戴全封闭商周青铜战盔的守阵战将背影/侧影
+    this.warlordBaseY = gateY - 26;
+    this.warlordHalo = this.add.circle(width / 2, this.warlordBaseY + 10, 38, this.warlord.accentHex, 0.14).setDepth(5);
+    this.warlordSprite = this.add.image(width / 2, this.warlordBaseY, this.warlord.texture).setScale(0.86).setDepth(10);
+
+    // 妖王专属血条（默认隐藏，每 5 波妖王登场时显示）
+    this.bossBarContainer = this.add.container(0, 0).setDepth(15).setVisible(false);
+    const bossBg = this.add.rectangle(width / 2, battleTop + 18, 320, 16, 0x1c1917, 0.95).setStrokeStyle(1.5, 0xef4444, 0.95);
+    this.bossHpFill = this.add.rectangle(width / 2 - 158, battleTop + 18, 316, 12, 0xdc2626).setOrigin(0, 0.5);
+    this.bossBarLabel = this.add.text(width / 2, battleTop + 18, 'BRONZE DEMON KING', {
+      fontSize: '11px',
+      fontStyle: 'bold',
+      color: '#fef08a'
+    }).setOrigin(0.5);
+    this.bossBarContainer.add([bossBg, this.bossHpFill, this.bossBarLabel]);
+
+    // 青铜分隔横梁 + 实时天劫/神通播报栏
+    this.add.rectangle(width / 2, 418, width, 26, 0x1c1612, 0.98).setStrokeStyle(1.5, 0x78350f, 0.95).setDepth(12);
+    this.bannerText = this.add.text(width / 2, 418, '', {
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: '#fbbf24',
+      letterSpacing: 1
+    }).setOrigin(0.5).setDepth(13);
+  }
+
+  _buildBaguaForge() {
+    const { width } = GAME_DESIGN;
+    const boardPx = BOARD_SIZE * CELL_SIZE;
+    const boardCenterX = ORIGIN_X + boardPx / 2;
+    const boardCenterY = ORIGIN_Y + boardPx / 2;
+
+    // 下半屏青铜锻炉暗底
+    this.add.rectangle(width / 2, 695, width, 530, 0x0d0b11, 1).setDepth(0);
+
+    // 底层缓慢旋转的商周青铜八卦圆阵装饰
+    this.forgeBaguaBg = this.add.image(boardCenterX, boardCenterY, 'baguaRing').setScale(1.88).setAlpha(0.24).setDepth(1);
+
+    // 5×5 青铜八卦外框
+    const frame = this.add.rectangle(boardCenterX, boardCenterY, boardPx + 18, boardPx + 18, 0x181312, 0.96).setDepth(2);
+    frame.setStrokeStyle(3, 0xb45309, 0.95);
+
+    // 绘制 25 个青铜锻炉凹槽
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+        const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+        const cell = this.add.rectangle(cx, cy, CELL_SIZE - 4, CELL_SIZE - 4, 0x221b18, 0.92).setDepth(3);
+        cell.setStrokeStyle(1.2, 0x4b3624, 0.85);
+      }
+    }
+
+    // 落点半透明预览层 & 即将消除行/列高亮层
+    this.previewGraphics = this.add.graphics().setDepth(24);
+
+    // 底部 3 个待选五行拼图槽位底框（无倒计时，大热区易抓起）
+    this.traySlotBgs = [];
+    for (let i = 0; i < 3; i++) {
+      const sx = TRAY_SLOTS_X[i];
+      const slotBg = this.add.rectangle(sx, TRAY_Y, 152, 146, 0x171316, 0.94).setDepth(3);
+      slotBg.setStrokeStyle(1.8, 0x5c3d22, 0.9);
+      this.traySlotBgs.push(slotBg);
+    }
+  }
+
+  _buildHud() {
+    const { width } = GAME_DESIGN;
+    const hudBg = this.add.rectangle(width / 2, 34, width, 68, 0x141012, 0.96).setDepth(20);
+    hudBg.setStrokeStyle(1.5, 0x5c3d22, 0.95);
+
+    // 左侧：波次与战功
+    this.waveText = this.add.text(14, 12, '', {
+      fontSize: '15px',
       fontStyle: 'bold',
       color: '#fbbf24'
     }).setDepth(21);
 
-    this.add.image(28, 55, 'spiritJade').setScale(0.45).setDepth(21);
-    this.jadeHudText = this.add.text(44, 46, `${this.runJade} JADE`, {
+    this.scoreText = this.add.text(14, 38, '', {
       fontSize: '15px',
       fontStyle: 'bold',
-      color: '#6ee7b7'
+      color: '#e7e5e4'
     }).setDepth(21);
 
-    this.statusLineText = this.add.text(18, 74, 'COMBO ×0', {
-      fontSize: '13px',
+    // 中间：上方元始灵气条（满槽弹出 3 张青铜竹简元始敕令）
+    this.qiLabel = this.add.text(width / 2 - 18, 16, '', {
+      fontSize: '11px',
       fontStyle: 'bold',
-      color: '#c4b5fd'
-    }).setDepth(21);
-
-    // 中间：10 连击狂热能量槽（FEVER BAR）
-    this.feverLabel = this.add.text(width / 2 + 22, 22, 'FEVER 0/10', {
-      fontSize: '13px',
-      fontStyle: 'bold',
-      color: '#fdba74',
+      color: '#5eead4',
       letterSpacing: 1
     }).setOrigin(0.5).setDepth(21);
+    this.add.rectangle(width / 2 - 18, 40, 146, 14, 0x1f191a).setStrokeStyle(1.2, 0x0d9488, 0.9).setDepth(21);
+    this.qiBar = this.add.rectangle(width / 2 - 91, 40, 0, 10, 0x2dd4bf).setOrigin(0, 0.5).setDepth(22);
 
-    const barBg = this.add.rectangle(width / 2 + 22, 46, 154, 14, 0x261a3d).setDepth(21);
-    barBg.setStrokeStyle(1.2, 0x78350f, 0.9);
-    this.feverBar = this.add.rectangle(width / 2 - 55, 46, 0, 12, 0xf97316).setOrigin(0, 0.5).setDepth(22);
+    // 右上角：EN/中 切换、音效开关、暂停（宽大矩形热区）
+    this.hudLangBtn = this._createMiniBtn(376, 34, 58, 38, i18n.lang === 'en' ? '中' : 'EN', 0x2dd4bf, () => {
+      i18n.toggle();
+      this._refreshHudAndState();
+    });
 
-    this.buffLabel = this.add.text(width / 2 + 22, 74, '', {
-      fontSize: '12px',
-      fontStyle: 'bold',
-      color: '#67e8f9'
-    }).setOrigin(0.5).setDepth(21);
+    this.hudSoundBtn = this._createMiniBtn(440, 34, 50, 38, synthAudio.enabled ? 'SFX' : 'OFF', 0xd99b38, () => {
+      this._toggleSound();
+    });
 
-    // 右上角静音与暂停按钮（宽松矩形触控热区）
-    const soundHitBg = this.add.rectangle(width - 96, 48, 46, 46, 0x1e1435, 0.9)
-      .setStrokeStyle(1.5, 0xf59e0b, 0.7)
-      .setDepth(22)
-      .setInteractive({
-        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
-        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-        useHandCursor: true
-      });
-    this.hudSoundBtn = this.add.text(width - 96, 48, synthAudio.enabled ? 'SFX' : 'MUTE', {
-      fontSize: '12px',
-      fontStyle: 'bold',
-      color: synthAudio.enabled ? '#fde68a' : '#94a3b8'
-    }).setOrigin(0.5).setDepth(23);
-    soundHitBg.on('pointerdown', () => this._toggleSound());
-
-    const pauseHitBg = this.add.rectangle(width - 38, 48, 46, 46, 0x1e1435, 0.9)
-      .setStrokeStyle(1.5, 0xf59e0b, 0.7)
-      .setDepth(22)
-      .setInteractive({
-        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
-        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-        useHandCursor: true
-      });
-    this.hudPauseBtn = this.add.text(width - 38, 48, 'II', {
-      fontSize: '16px',
-      fontStyle: 'bold',
-      color: '#fde68a'
-    }).setOrigin(0.5).setDepth(23);
-    pauseHitBg.on('pointerdown', () => this._togglePause());
+    this.hudPauseBtn = this._createMiniBtn(498, 34, 46, 38, 'II', 0xd99b38, () => {
+      this._togglePause();
+    });
   }
 
-  _updateHud() {
-    this.scoreText.setText(`SCORE ${this.score}`);
-    this.jadeHudText.setText(`${this.runJade} JADE`);
-    this.statusLineText.setText(
-      this.isFever ? 'FEVER MODE ACTIVE!' : `COMBO ×${this.combo}`
+  _createMiniBtn(x, y, w, h, labelText, strokeColor, onClick) {
+    const bg = this.add.rectangle(x, y, w, h, 0x1f1816, 0.95).setDepth(22);
+    bg.setStrokeStyle(1.5, strokeColor, 0.85);
+    bg.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-8, -8, w + 16, h + 16),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
+    const label = this.add.text(x, y, labelText, {
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#fef08a'
+    }).setOrigin(0.5).setDepth(23);
+    bg.on('pointerdown', () => {
+      try { synthAudio.ensureContext(); synthAudio.playClick(); } catch (_) {}
+      try { onClick(); } catch (_) {}
+    });
+    return { bg, label };
+  }
+
+  _refreshHudAndState() {
+    const hasBoss = this.enemies.some((e) => e.active && e.kind === 'boss');
+    this.waveText.setText(hasBoss ? i18n.t('bossWave', this.wave) : i18n.t('wave', this.wave));
+    this.scoreText.setText(i18n.t('scoreLabel', this.score));
+    this.qiLabel.setText(`${i18n.t('spiritQi')} ${Math.floor(this.spiritQi)}/${this.spiritQiMax}`);
+    this.qiBar.width = Math.round(146 * Phaser.Math.Clamp(this.spiritQi / this.spiritQiMax, 0, 1));
+
+    const hpRatio = Phaser.Math.Clamp(this.gateHp / this.gateMaxHp, 0, 1);
+    this.gateHpBar.width = Math.round(300 * hpRatio);
+    this.gateHpBar.setFillStyle(hpRatio > 0.45 ? 0x22c55e : (hpRatio > 0.22 ? 0xf59e0b : 0xef4444));
+    this.gateShieldBar.width = Math.round(300 * Phaser.Math.Clamp(this.gateShield / this.gateMaxHp, 0, 1));
+    this.gateHpText.setText(
+      this.gateShield > 0
+        ? `${i18n.t('gateHp', Math.ceil(this.gateHp), this.gateMaxHp)} (+${Math.ceil(this.gateShield)})`
+        : i18n.t('gateHp', Math.ceil(this.gateHp), this.gateMaxHp)
     );
-    this.statusLineText.setColor(this.isFever ? '#fde047' : '#c4b5fd');
 
-    if (this.isFever) {
-      const sec = Math.max(0, this.feverRemainingMs / 1000).toFixed(1);
-      this.feverLabel.setText(`FEVER ${sec}s`).setColor('#fde047');
-      const ratio = Phaser.Math.Clamp(this.feverRemainingMs / 5000, 0, 1);
-      this.feverBar.width = Math.round(154 * ratio);
-      this.feverBar.setFillStyle(0xfef08a);
-    } else {
-      this.feverLabel.setText(`FEVER ${this.feverStreak}/10`).setColor('#fdba74');
-      const ratio = Phaser.Math.Clamp(this.feverStreak / 10, 0, 1);
-      this.feverBar.width = Math.round(154 * ratio);
-      this.feverBar.setFillStyle(0xf97316);
-    }
+    this.hudLangBtn.label.setText(i18n.lang === 'en' ? '中' : 'EN');
+    this.hudSoundBtn.label.setText(synthAudio.enabled ? 'SFX' : 'OFF');
 
-    const buffs = [];
-    if (this.hasShield) buffs.push('SHIELD');
-    if (this.magnetRemainingMs > 0) buffs.push(`MAGNET ${Math.ceil(this.magnetRemainingMs / 1000)}s`);
-    this.buffLabel.setText(buffs.join(' · '));
-
+    // 同步轻量化只读状态快照（供手机触摸拖拽验收测试精准读取盘面与槽位）
     if (typeof window !== 'undefined' && window.__GAME_STATE__) {
+      let occupied = 0;
+      const boardSnap = this.board.map((row) =>
+        row.map((cell) => {
+          if (!cell) return null;
+          occupied += 1;
+          return cell.sealed ? 'sealed' : cell.element;
+        })
+      );
       window.__GAME_STATE__.scene = 'GameScene';
+      window.__GAME_STATE__.lang = i18n.lang;
       window.__GAME_STATE__.score = this.score;
-      window.__GAME_STATE__.runJade = this.runJade;
-      window.__GAME_STATE__.combo = this.combo;
-      window.__GAME_STATE__.feverActive = this.isFever;
-      window.__GAME_STATE__.nearMissCount = this.nearMissCount;
-      window.__GAME_STATE__.playerX = Math.round(this.player?.x || GAME_DESIGN.width / 2);
+      window.__GAME_STATE__.wave = this.wave;
+      window.__GAME_STATE__.gateHp = Math.ceil(this.gateHp);
+      window.__GAME_STATE__.gateMaxHp = this.gateMaxHp;
+      window.__GAME_STATE__.runEssence = this.runEssence;
+      window.__GAME_STATE__.linesCleared = this.linesCleared;
+      window.__GAME_STATE__.piecesPlaced = this.piecesPlaced;
+      window.__GAME_STATE__.occupiedCells = occupied;
+      window.__GAME_STATE__.dragging = Boolean(this.dragState);
+      window.__GAME_STATE__.dragLiftY = DRAG_LIFT_Y;
+      window.__GAME_STATE__.board = boardSnap;
+      window.__GAME_STATE__.tray = this.trayPieces.map((p, idx) =>
+        p
+          ? {
+              slotIndex: idx,
+              x: TRAY_SLOTS_X[idx],
+              y: TRAY_Y,
+              shapeId: p.shape.id,
+              cells: p.shape.cells,
+              element: p.element,
+              isPill: Boolean(p.isPill)
+            }
+          : null
+      );
+      window.__GAME_STATE__.boardGeom = {
+        originX: ORIGIN_X,
+        originY: ORIGIN_Y,
+        cellSize: CELL_SIZE,
+        size: BOARD_SIZE,
+        dragLiftY: DRAG_LIFT_Y
+      };
+      window.__GAME_STATE__.hudButtons = {
+        lang: { x: 376, y: 34 },
+        sound: { x: 440, y: 34 },
+        pause: { x: 498, y: 34 }
+      };
       window.__GAME_STATE__.soundEnabled = synthAudio.enabled;
       window.__GAME_STATE__.revived = this.revived;
     }
   }
 
-  _getSpeedFactor() {
-    // 随分数平滑加快节奏（1.0x -> 2.85x）
-    const base = 1 + Math.min(1.85, this.score / 2600);
-    return this.isFever ? base * 1.38 : base;
-  }
+  // =========================================================================
+  // 2. 底部三选一拼图生成、单指拖拽（上移 60px 防遮挡）与落点高亮预览
+  // =========================================================================
 
-  _toggleSound() {
-    const next = !synthAudio.enabled;
-    try {
-      synthAudio.setEnabled(next);
-      if (next) {
-        synthAudio.ensureContext();
-        synthAudio.playClick();
+  _bindDragAndKeys() {
+    this.input.keyboard?.on('keydown-P', () => this._togglePause());
+    this.input.keyboard?.on('keydown-ESC', () => this._togglePause());
+    this.input.keyboard?.on('keydown-M', () => this._toggleSound());
+
+    this.input.on('pointerdown', (pointer) => {
+      if (this.isPaused || this.modalActive || this.isEnded || this.dragState) return;
+      // 仅在底部待选拼图区响应抓起
+      if (pointer.y < 764) return;
+
+      let bestIdx = -1;
+      let bestDist = 92;
+      for (let i = 0; i < 3; i++) {
+        if (!this.trayPieces[i]) continue;
+        const dx = Math.abs(pointer.x - TRAY_SLOTS_X[i]);
+        if (dx < bestDist) {
+          bestDist = dx;
+          bestIdx = i;
+        }
       }
-    } catch (_) {}
-    this.hudSoundBtn.setText(next ? 'SFX' : 'MUTE');
-    this.hudSoundBtn.setColor(next ? '#fde68a' : '#94a3b8');
-    this._updateHud();
-    try {
-      platformBridge.saveCloudProgress({ soundEnabled: next }).catch(() => {});
-    } catch (_) {}
-  }
-
-  _togglePause() {
-    if (this.isEnded) return;
-    this.isPaused = !this.isPaused;
-    if (this.isPaused) {
-      this.physics.world.pause();
-      try { synthAudio.stopWarDrums(); } catch (_) {}
-      try { platformBridge.gameplayStop(); } catch (_) {}
-      this._showPauseOverlay();
-    } else {
-      this._hidePauseOverlay();
-      this.physics.world.resume();
-      try { synthAudio.startWarDrums(); } catch (_) {}
-      try { platformBridge.gameplayStart({ resume: 1 }); } catch (_) {}
-    }
-  }
-
-  _showPauseOverlay() {
-    const { width, height } = GAME_DESIGN;
-    this.pauseOverlay = this.add.container(0, 0).setDepth(40);
-    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72)
-      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
-    const box = this.add.rectangle(width / 2, height / 2, 348, 256, 0x140e24, 0.97);
-    box.setStrokeStyle(2, 0xf59e0b, 0.9);
-    const txt = this.add.text(width / 2, height / 2 - 76, 'PAUSED', {
-      fontSize: '30px',
-      fontStyle: 'bold',
-      color: '#fbbf24',
-      letterSpacing: 3
-    }).setOrigin(0.5);
-
-    const resumeHit = new Phaser.Geom.Rectangle(-12, -12, 248, 76);
-    const resumeBg = this.add.rectangle(width / 2, height / 2, 224, 52, 0xdc2626)
-      .setStrokeStyle(2, 0xfbbf24, 0.85)
-      .setInteractive({ hitArea: resumeHit, hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-    const resumeTxt = this.add.text(width / 2, height / 2, 'RESUME', {
-      fontSize: '20px',
-      fontStyle: 'bold',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    resumeBg.on('pointerdown', () => this._togglePause());
-
-    const menuHit = new Phaser.Geom.Rectangle(-12, -12, 248, 72);
-    const menuBg = this.add.rectangle(width / 2, height / 2 + 74, 224, 48, 0x1e1435)
-      .setStrokeStyle(1.5, 0x78350f, 0.9)
-      .setInteractive({ hitArea: menuHit, hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-    const menuTxt = this.add.text(width / 2, height / 2 + 74, 'MAIN MENU', {
-      fontSize: '18px',
-      fontStyle: 'bold',
-      color: '#cbd5e1'
-    }).setOrigin(0.5);
-    menuBg.on('pointerdown', () => {
-      try { synthAudio.stopWarDrums(); } catch (_) {}
-      this.scene.start('MenuScene', { save: platformBridge.getLocalSave() });
+      if (bestIdx !== -1) {
+        try { synthAudio.ensureContext(); } catch (_) {}
+        this._startDragging(bestIdx, pointer.x, pointer.y);
+      }
     });
 
-    this.pauseOverlay.add([dim, box, txt, resumeBg, resumeTxt, menuBg, menuTxt]);
+    this.input.on('pointermove', (pointer) => {
+      if (!this.dragState || !pointer.isDown) return;
+      this._updateDragging(pointer.x, pointer.y);
+    });
+
+    this.input.on('pointerup', (pointer) => {
+      if (!this.dragState) return;
+      this._finishDragging(pointer.x, pointer.y);
+    });
   }
 
-  _hidePauseOverlay() {
-    if (this.pauseOverlay) {
-      this.pauseOverlay.destroy();
-      this.pauseOverlay = null;
+  _pickRandomShape() {
+    const totalW = PIECE_SHAPES.reduce((acc, s) => acc + s.weight, 0);
+    let r = Math.random() * totalW;
+    for (const s of PIECE_SHAPES) {
+      r -= s.weight;
+      if (r <= 0) return s;
+    }
+    return PIECE_SHAPES[0];
+  }
+
+  _getShapeBounds(shape) {
+    let maxR = 0;
+    let maxC = 0;
+    for (const [r, c] of shape.cells) {
+      if (r > maxR) maxR = r;
+      if (c > maxC) maxC = c;
+    }
+    return { rows: maxR + 1, cols: maxC + 1 };
+  }
+
+  _createPieceVisual(shape, element, isPill, cellPx, depth = 14) {
+    const container = this.add.container(0, 0).setDepth(depth);
+    const { rows, cols } = this._getShapeBounds(shape);
+    const totalW = cols * cellPx;
+    const totalH = rows * cellPx;
+    const tex = isPill ? 'tile_pill' : ELEMENTS[element].texture;
+    const scale = (cellPx - 4) / 56;
+
+    for (const [r, c] of shape.cells) {
+      const lx = c * cellPx + cellPx / 2 - totalW / 2;
+      const ly = r * cellPx + cellPx / 2 - totalH / 2;
+      const img = this.add.image(lx, ly, tex).setScale(scale);
+      container.add(img);
+    }
+    return container;
+  }
+
+  _refillTray(forcePillSlot = false) {
+    // 清理残留容器
+    for (let i = 0; i < 3; i++) {
+      if (this.trayPieces[i]?.container) {
+        this.trayPieces[i].container.destroy();
+      }
+      this.trayPieces[i] = null;
+    }
+
+    const shapes = [this._pickRandomShape(), this._pickRandomShape(), this._pickRandomShape()];
+    // 智能保护：若随机的 3 块都无法放入当前盘面，尝试将第 1 块替换为可放入的形状（保持流畅体验）
+    if (!shapes.some((sh) => this._canShapeFitAnywhere(sh))) {
+      const fitShape = PIECE_SHAPES.find((sh) => this._canShapeFitAnywhere(sh));
+      if (fitShape) shapes[0] = fitShape;
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const isPill = forcePillSlot && i === 1;
+      const shape = isPill ? PIECE_SHAPES[0] : shapes[i];
+      const element = ELEMENT_KEYS[Phaser.Math.Between(0, ELEMENT_KEYS.length - 1)];
+      const visual = this._createPieceVisual(shape, element, isPill, 34, 14);
+      visual.setPosition(TRAY_SLOTS_X[i], TRAY_Y);
+      visual.setScale(0.75);
+      this.tweens.add({ targets: visual, scaleX: 1, scaleY: 1, duration: 180, ease: 'Back.easeOut' });
+      this.trayPieces[i] = { shape, element, isPill, container: visual, slotIndex: i };
+    }
+
+    this._refreshHudAndState();
+    this._checkNoMovesCondition();
+  }
+
+  _startDragging(slotIndex, px, py) {
+    const piece = this.trayPieces[slotIndex];
+    if (!piece) return;
+    try { synthAudio.playPickup(); } catch (_) {}
+
+    piece.container.setAlpha(0.22);
+    const dragVisual = this._createPieceVisual(piece.shape, piece.element, piece.isPill, CELL_SIZE, 32);
+    dragVisual.setAlpha(0.92);
+
+    this.dragState = {
+      slotIndex,
+      piece,
+      dragVisual,
+      hoverRow: -1,
+      hoverCol: -1,
+      valid: false
+    };
+    this._updateDragging(px, py);
+    this._refreshHudAndState();
+  }
+
+  _computeDropGrid(shape, pointerX, pointerY) {
+    // 核心红线：手机单指拖动时拼图块自动向上偏移 60px，避免手指遮挡落点预览
+    const liftCenterX = pointerX;
+    const liftCenterY = pointerY - DRAG_LIFT_Y;
+    const { rows, cols } = this._getShapeBounds(shape);
+    const topLeftX = liftCenterX - (cols * CELL_SIZE) / 2;
+    const topLeftY = liftCenterY - (rows * CELL_SIZE) / 2;
+    const col = Math.round((topLeftX - ORIGIN_X) / CELL_SIZE);
+    const row = Math.round((topLeftY - ORIGIN_Y) / CELL_SIZE);
+    return { row, col, liftCenterX, liftCenterY };
+  }
+
+  _canPlaceAt(shape, baseRow, baseCol) {
+    for (const [dr, dc] of shape.cells) {
+      const r = baseRow + dr;
+      const c = baseCol + dc;
+      if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return false;
+      if (this.board[r][c] !== null) return false;
+    }
+    return true;
+  }
+
+  _canShapeFitAnywhere(shape) {
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        if (this._canPlaceAt(shape, r, c)) return true;
+      }
+    }
+    return false;
+  }
+
+  _updateDragging(px, py) {
+    if (!this.dragState) return;
+    const { piece, dragVisual } = this.dragState;
+    const { row, col, liftCenterX, liftCenterY } = this._computeDropGrid(piece.shape, px, py);
+
+    dragVisual.setPosition(liftCenterX, liftCenterY);
+    const valid = this._canPlaceAt(piece.shape, row, col);
+    this.dragState.hoverRow = row;
+    this.dragState.hoverCol = col;
+    this.dragState.valid = valid;
+
+    this._renderPlacementPreview(piece, row, col, valid);
+  }
+
+  _renderPlacementPreview(piece, baseRow, baseCol, valid) {
+    const g = this.previewGraphics;
+    g.clear();
+    if (!valid) return;
+
+    const color = piece.isPill ? 0xfbbf24 : ELEMENTS[piece.element].hex;
+
+    // 1. 绘制落点半透明高亮预览格
+    g.fillStyle(color, 0.34);
+    g.lineStyle(2.5, 0xfef08a, 0.92);
+    for (const [dr, dc] of piece.shape.cells) {
+      const x = ORIGIN_X + (baseCol + dc) * CELL_SIZE + 3;
+      const y = ORIGIN_Y + (baseRow + dr) * CELL_SIZE + 3;
+      g.fillRoundedRect(x, y, CELL_SIZE - 6, CELL_SIZE - 6, 7);
+      g.strokeRoundedRect(x, y, CELL_SIZE - 6, CELL_SIZE - 6, 7);
+    }
+
+    // 2. 预演放置后是否会填满整行/整列，并用流光金框高亮即将触发神通的行列
+    const simSet = new Set(piece.shape.cells.map(([dr, dc]) => `${baseRow + dr},${baseCol + dc}`));
+    const isFilled = (r, c) => {
+      if (simSet.has(`${r},${c}`)) return true;
+      return Boolean(this.board[r][c] && !this.board[r][c].sealed);
+    };
+
+    g.lineStyle(3.5, 0xfde047, 0.95);
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      let full = true;
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        if (!isFilled(r, c)) { full = false; break; }
+      }
+      if (full) {
+        g.strokeRoundedRect(ORIGIN_X + 2, ORIGIN_Y + r * CELL_SIZE + 2, BOARD_SIZE * CELL_SIZE - 4, CELL_SIZE - 4, 8);
+      }
+    }
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      let full = true;
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        if (!isFilled(r, c)) { full = false; break; }
+      }
+      if (full) {
+        g.strokeRoundedRect(ORIGIN_X + c * CELL_SIZE + 2, ORIGIN_Y + 2, CELL_SIZE - 4, BOARD_SIZE * CELL_SIZE - 4, 8);
+      }
     }
   }
 
-  _spawnCollectible() {
-    const { width } = GAME_DESIGN;
-    const speedFactor = this._getSpeedFactor();
-    const x = Phaser.Math.Between(44, width - 44);
-    const roll = Math.random();
-    let texture = 'spiritJade';
-    let itemType = 'jade';
-    if (roll > 0.92 && !this.hasShield) {
-      texture = 'goldenBell';
-      itemType = 'shield';
-    } else if (roll > 0.84 && this.magnetRemainingMs <= 0) {
-      texture = 'magnetTalisman';
-      itemType = 'magnet';
-    }
+  _finishDragging(px, py) {
+    const state = this.dragState;
+    if (!state) return;
+    this._updateDragging(px, py);
 
-    const item = this.collectibles.create(x, 108, texture).setDepth(7);
-    item.setData('itemType', itemType);
-    item.setVelocityY((220 + Phaser.Math.Between(0, 55)) * speedFactor);
-    item.setAngularVelocity(itemType === 'jade' ? Phaser.Math.Between(-75, 75) : Phaser.Math.Between(-35, 35));
-  }
+    const { slotIndex, piece, dragVisual, hoverRow, hoverCol, valid } = state;
+    this.previewGraphics.clear();
+    dragVisual.destroy();
+    this.dragState = null;
 
-  _spawnObstacle() {
-    const { width } = GAME_DESIGN;
-    const speedFactor = this._getSpeedFactor();
-    const x = Phaser.Math.Between(46, width - 46);
-    const isBronze = Math.random() > 0.45;
-    const texture = isBronze ? 'bronzeArray' : 'celestialMeteor';
-
-    const obs = this.obstacles.create(x, 108, texture).setDepth(8);
-    const scale = Phaser.Math.FloatBetween(0.86, 1.16);
-    obs.setScale(scale);
-    obs.setData('obstacleKind', isBronze ? 'bronze' : 'meteor');
-    obs.setData('nearMissed', false);
-
-    if (isBronze) {
-      obs.body.setCircle(22, 12, 12);
-      obs.setVelocityY((255 + Phaser.Math.Between(0, 65)) * speedFactor);
-      obs.setVelocityX(Phaser.Math.Between(-36, 36) * Math.min(1.6, speedFactor));
-      obs.setAngularVelocity(Phaser.Math.Between(140, 240) * (Math.random() > 0.5 ? 1 : -1));
+    if (valid && this._canPlaceAt(piece.shape, hoverRow, hoverCol)) {
+      this._commitPlacement(slotIndex, piece, hoverRow, hoverCol);
     } else {
-      obs.body.setCircle(20, 10, 10);
-      obs.setVelocityY((290 + Phaser.Math.Between(0, 80)) * speedFactor);
-      obs.setVelocityX(Phaser.Math.Between(-58, 58) * Math.min(1.6, speedFactor));
-      obs.setAngularVelocity(Phaser.Math.Between(-190, 190));
+      piece.container.setAlpha(1);
+      try { synthAudio.playInvalid(); } catch (_) {}
+      this._refreshHudAndState();
     }
   }
 
-  _onCollect(_player, item) {
-    if (this.isEnded || !item.active) return;
-    const type = item.getData('itemType');
-    const ix = item.x;
-    const iy = item.y;
-    item.destroy();
+  _commitPlacement(slotIndex, piece, baseRow, baseCol) {
+    // 1. 写入 5×5 阵盘并渲染青铜方块
+    const tex = piece.isPill ? 'tile_pill' : ELEMENTS[piece.element].texture;
+    for (const [dr, dc] of piece.shape.cells) {
+      const r = baseRow + dr;
+      const c = baseCol + dc;
+      const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+      const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+      const sprite = this.add.image(cx, cy, tex).setDepth(12).setScale(0.7);
+      this.tweens.add({ targets: sprite, scaleX: 1, scaleY: 1, duration: 120, ease: 'Back.easeOut' });
+      this.board[r][c] = { element: piece.element, isPill: Boolean(piece.isPill), sprite };
+    }
 
-    if (type === 'shield') {
-      this.hasShield = true;
-      try { synthAudio.playShield(); } catch (_) {}
-      this._spawnBurst(ix, iy, 10, 0xfef08a, 'spark');
-      this._showFloatingText(ix, iy, 'GOLDEN BELL!', '#fde047', '20px');
-    } else if (type === 'magnet') {
-      this.magnetRemainingMs = 7000;
-      try { synthAudio.playMagnet(); } catch (_) {}
-      this._spawnBurst(ix, iy, 10, 0x67e8f9, 'spark');
-      this._showFloatingText(ix, iy, 'MAGNET 7S!', '#67e8f9', '20px');
+    // 消耗该槽位拼图
+    if (piece.container) piece.container.destroy();
+    this.trayPieces[slotIndex] = null;
+    this.piecesPlaced += 1;
+    this.score += piece.shape.cells.length * 10;
+    try { synthAudio.playPlace(); } catch (_) {}
+
+    // 2. 若为天劫「真假灵丹」块，落子后即刻揭晓吉凶！
+    if (piece.isPill) {
+      this._resolveMysticElixir(baseRow, baseCol);
+    }
+
+    // 3. 检测整行/整列消除与五行神通轰击
+    this._resolveLineClears();
+
+    // 4. 若 3 个槽位全部放完，立即刷新下一组 3 块
+    if (this.trayPieces.every((p) => p === null)) {
+      this._refillTray(false);
     } else {
-      // 发光金玉（Spirit Jade）：五声音阶连击升调 + 累计 10 连击触发 FEVER MODE
-      this.combo += 1;
-      this.runJade += 1;
-      const mult = 1 + Math.min(1.5, (this.combo - 1) * 0.12);
-      const gain = Math.round(20 * mult * (this.isFever ? 1.5 : 1));
-      this.score += gain;
+      this._refreshHudAndState();
+      this._checkNoMovesCondition();
+    }
+  }
 
-      try { synthAudio.playCollect(this.combo); } catch (_) {}
-      this._spawnBurst(ix, iy, 7, 0x34d399, 'spark');
-      this._showFloatingText(ix, iy, `+${gain}`, '#6ee7b7', '19px');
+  _resolveMysticElixir(row, col) {
+    const isReal = Math.random() < 0.7;
+    const cx = ORIGIN_X + col * CELL_SIZE + CELL_SIZE / 2;
+    const cy = ORIGIN_Y + row * CELL_SIZE + CELL_SIZE / 2;
+    if (isReal) {
+      // 太上金丹：清空自身，释放全五行震荡波并回血
+      if (this.board[row][col]?.sprite) this.board[row][col].sprite.destroy();
+      this.board[row][col] = null;
+      this._healGate(18, 12);
+      this._damageAllEnemies(55, false, 0xfbbf24);
+      this._showBanner(i18n.t('realPillMsg'), '#fde047');
+      this._spawnBurst(cx, cy, 16, 0xfbbf24, 'spark');
+      try { synthAudio.playResonance(); } catch (_) {}
+    } else {
+      // 魔化伪丹：刷出一只急速妖影突袭（击杀可赚额外精魄）
+      this._spawnEnemy('wraith', Phaser.Math.Between(100, GAME_DESIGN.width - 100));
+      this._showBanner(i18n.t('fakePillMsg'), '#f87171');
+      this._spawnBurst(cx, cy, 12, 0xa855f7, 'shard');
+      try { synthAudio.playTribulation(); } catch (_) {}
+    }
+  }
 
-      if (!this.isFever) {
-        this.feverStreak += 1;
-        if (this.feverStreak >= 10) {
-          this._triggerFeverMode();
+  // =========================================================================
+  // 3. 五行炼宝消除、天道共鸣（≥2 行/列）与五大法宝神通特效
+  // =========================================================================
+
+  _resolveLineClears() {
+    const fullRows = [];
+    const fullCols = [];
+
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      let ok = true;
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        if (!this.board[r][c] || this.board[r][c].sealed) { ok = false; break; }
+      }
+      if (ok) fullRows.push(r);
+    }
+
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      let ok = true;
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        if (!this.board[r][c] || this.board[r][c].sealed) { ok = false; break; }
+      }
+      if (ok) fullCols.push(c);
+    }
+
+    const totalLines = fullRows.length + fullCols.length;
+    if (totalLines === 0) return;
+
+    // 统计每条消除行/列的主导五行元素
+    const lineCasts = [];
+    const pickDominant = (cells) => {
+      const counts = {};
+      for (const cell of cells) {
+        if (cell && cell.element) counts[cell.element] = (counts[cell.element] || 0) + 1;
+      }
+      let best = 'fire';
+      let bestN = -1;
+      for (const k of ELEMENT_KEYS) {
+        if ((counts[k] || 0) > bestN) { bestN = counts[k] || 0; best = k; }
+      }
+      return best;
+    };
+
+    for (const r of fullRows) {
+      const cells = [];
+      for (let c = 0; c < BOARD_SIZE; c++) cells.push(this.board[r][c]);
+      lineCasts.push({ element: pickDominant(cells), colHint: 2 });
+    }
+    for (const c of fullCols) {
+      const cells = [];
+      for (let r = 0; r < BOARD_SIZE; r++) cells.push(this.board[r][c]);
+      lineCasts.push({ element: pickDominant(cells), colHint: c });
+    }
+
+    // 收集所有待消除格坐标
+    const clearSet = new Set();
+    for (const r of fullRows) for (let c = 0; c < BOARD_SIZE; c++) clearSet.add(`${r},${c}`);
+    for (const c of fullCols) for (let r = 0; r < BOARD_SIZE; r++) clearSet.add(`${r},${c}`);
+
+    // 相邻紫雷封印格自动破封解锁
+    const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const brokenSeals = new Set();
+    for (const key of clearSet) {
+      const [r, c] = key.split(',').map(Number);
+      for (const [dr, dc] of dirs) {
+        const nr = r + dr;
+        const nc = c + dc;
+        if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+          if (this.board[nr][nc]?.sealed) brokenSeals.add(`${nr},${nc}`);
         }
       }
     }
 
-    this._updateHud();
-  }
+    // 执行格子消除动画与粒子爆裂
+    for (const key of clearSet) {
+      const [r, c] = key.split(',').map(Number);
+      const cell = this.board[r][c];
+      if (!cell) continue;
+      const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+      const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+      const tint = cell.element ? ELEMENTS[cell.element].hex : 0xfbbf24;
+      this._spawnBurst(cx, cy, 5, tint, 'spark');
+      if (cell.sprite) cell.sprite.destroy();
+      this.board[r][c] = null;
+    }
 
-  _triggerFeverMode() {
-    this.isFever = true;
-    this.feverRemainingMs = 5000;
-    this.feverStreak = 0;
-    this.feverCount += 1;
+    for (const key of brokenSeals) {
+      const [r, c] = key.split(',').map(Number);
+      const cell = this.board[r][c];
+      if (cell?.sprite) cell.sprite.destroy();
+      this.board[r][c] = null;
+      const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+      const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+      this._spawnBurst(cx, cy, 10, 0xc084fc, 'shard');
+      this._addSpiritQi(18);
+      this._showFloatingText(cx, cy - 12, i18n.t('sealBroken'), '#d8b4fe', '15px');
+    }
 
-    try { synthAudio.playFeverStart(); } catch (_) {}
-    this.cameras.main.shake(180, 0.01);
-    this._spawnBurst(this.player.x, this.player.y, 18, 0xfbbf24, 'spark');
-    this._showFloatingText(GAME_DESIGN.width / 2, 230, 'FEVER MODE! SMASH ALL!', '#fde047', '28px');
+    this.linesCleared += totalLines;
+    const isResonance = totalLines >= 2;
+    const resonanceMult = isResonance ? (this.warlord.bonus.resonanceMult || 2.0) : 1.0;
+
+    this.score += Math.round(totalLines * 120 * resonanceMult);
+    this._addSpiritQi(totalLines * 14);
+
+    // 肉鸽敕令：青莲圣愈（每次消行自动回血与护盾）
+    const bastionStacks = this.decrees.wood_bastion || 0;
+    if (bastionStacks > 0) {
+      this._healGate(8 * bastionStacks, 6 * bastionStacks);
+    }
+
+    // 战将出招动作脉冲
+    this.tweens.add({
+      targets: this.warlordSprite,
+      y: this.warlordBaseY - 12,
+      scaleX: 0.96,
+      scaleY: 0.96,
+      duration: 110,
+      yoyo: true
+    });
+
+    if (isResonance) {
+      try { synthAudio.playResonance(); } catch (_) {}
+      this.cameras.main.shake(170, 0.01);
+      this._showBanner(`${i18n.t('resonanceTitle')} ${i18n.t('resonanceBonus')}`, '#fde047');
+      this._showFloatingText(GAME_DESIGN.width / 2, 210, i18n.t('resonanceTitle'), '#fde047', '26px');
+      try {
+        platformBridge.trackEvent('heavenly_resonance', {
+          lines: totalLines,
+          wave: this.wave,
+          score: this.score
+        });
+      } catch (_) {}
+
+      // 雷震子被动：天道共鸣追加紫雷全屏打击
+      if (this.warlord.bonus.resonanceZap) {
+        this._damageAllEnemies(45, true, 0xc084fc);
+      }
+      // 敕令：天道回响（额外砸落一座番天印）
+      if ((this.decrees.resonance_echo || 0) > 0) {
+        this._castEarthSeal(1.5);
+      }
+    }
+
+    // 按各消除行/列主导元素依次轰出神通
+    lineCasts.forEach((cast, idx) => {
+      this.time.delayedCall(idx * 90, () => {
+        if (!this.isEnded) {
+          this._castElementSkill(cast.element, resonanceMult, idx + 1, cast.colHint);
+        }
+      });
+    });
 
     try {
-      platformBridge.trackEvent('fever_trigger', {
-        score: this.score,
-        combo: this.combo,
-        fever_count: this.feverCount
+      platformBridge.trackEvent('line_clear', {
+        lines: totalLines,
+        resonance: isResonance ? 1 : 0,
+        elements: lineCasts.map((x) => x.element).join(','),
+        wave: this.wave
       });
     } catch (_) {}
+
+    this._refreshHudAndState();
   }
 
-  _onHitObstacle(_player, obstacle) {
-    if (this.isEnded || !obstacle.active) return;
-    const ox = obstacle.x;
-    const oy = obstacle.y;
-    const kind = obstacle.getData('obstacleKind');
-    obstacle.destroy();
-
-    // 狂热模式：直接撞碎沿途障碍 + 屏幕微震 + 顿帧反馈
-    if (this.isFever) {
-      this.score += 80;
-      this.hitStopMs = 42;
-      try { synthAudio.playSmash(); } catch (_) {}
-      this.cameras.main.shake(115, 0.009);
-      this._spawnBurst(ox, oy, 14, kind === 'bronze' ? 0x2dd4bf : 0xf97316, 'shard');
-      this._showFloatingText(ox, oy - 14, '+80 SMASH!', '#fde047', '22px');
-      this._updateHud();
-      return;
+  _castElementSkill(element, mult = 1, comboStep = 1, colHint = 2) {
+    try { synthAudio.playElementCast(element, comboStep); } catch (_) {}
+    const label = i18n.pack.elements[element] || '';
+    if (label) {
+      this._showFloatingText(this.warlordSprite.x, this.warlordBaseY - 46, label, ELEMENTS[element].css, '18px');
     }
 
-    if (this.invulnerableUntil > 0) return;
-
-    // 护体金钟抵挡一次撞击
-    if (this.hasShield) {
-      this.hasShield = false;
-      this.invulnerableUntil = 1400;
-      try { synthAudio.playBellBlock(); } catch (_) {}
-      this.cameras.main.shake(150, 0.01);
-      this._spawnBurst(ox, oy, 12, 0xfef08a, 'shard');
-      this._showFloatingText(this.player.x, this.player.y - 42, 'BELL SHIELD BLOCKED!', '#fde047', '21px');
-      this._updateHud();
-      return;
-    }
-
-    // 致命撞击 -> 结束本局
-    try { synthAudio.playHit(); } catch (_) {}
-    this.cameras.main.shake(240, 0.016);
-    this._spawnBurst(this.player.x, this.player.y, 18, 0xef4444, 'shard');
-    this._finishRound();
+    if (element === 'fire') this._castFireSpear(mult, colHint);
+    else if (element === 'metal') this._castMetalWhip(mult);
+    else if (element === 'earth') this._castEarthSeal(mult);
+    else if (element === 'water') this._castWaterSilk(mult);
+    else this._castWoodLotus(mult);
   }
 
-  _finishRound() {
+  /** 火 → 火尖枪：穿透火焰光束直贯战场 */
+  _castFireSpear(mult, colHint) {
+    const splitStacks = this.decrees.fire_split || 0;
+    const wlMult = this.warlord.bonus.fireDmgMult || 1.0;
+    const dmg = Math.round(52 * mult * wlMult * (1 + splitStacks * 0.35));
+
+    // 优先瞄准当前最靠近阵门的妖魔 X，否则使用对应列 X
+    const target = this._findClosestEnemy();
+    const centerX = target ? target.x : ORIGIN_X + colHint * CELL_SIZE + CELL_SIZE / 2;
+    const angles = splitStacks > 0 ? [-0.24, 0, 0.24] : [0];
+
+    for (const ang of angles) {
+      const startX = this.warlordSprite.x;
+      const startY = this.warlordBaseY - 18;
+      const endX = Phaser.Math.Clamp(centerX + Math.sin(ang) * 280, 26, GAME_DESIGN.width - 26);
+      const endY = GAME_DESIGN.battleTop + 8;
+
+      const g = this.add.graphics().setDepth(16);
+      g.lineStyle(14, 0xef4444, 0.45);
+      g.beginPath();
+      g.moveTo(startX, startY);
+      g.lineTo(endX, endY);
+      g.strokePath();
+      g.lineStyle(5, 0xfef08a, 0.98);
+      g.beginPath();
+      g.moveTo(startX, startY);
+      g.lineTo(endX, endY);
+      g.strokePath();
+      this.tweens.add({ targets: g, alpha: 0, duration: 280, onComplete: () => g.destroy() });
+
+      // 穿透火焰线沿途妖魔
+      const pierceCap = 4 + (this.warlord.bonus.fireExtraPierce || 0) + splitStacks * 2;
+      let hitCount = 0;
+      for (const e of [...this.enemies]) {
+        if (!e.active || hitCount >= pierceCap) continue;
+        const dist = this._distToSegment(e.x, e.y, startX, startY, endX, endY);
+        if (dist <= e.radius + 26) {
+          hitCount += 1;
+          this._damageEnemy(e, dmg, false, 0xef4444);
+        }
+      }
+    }
+  }
+
+  /** 金 → 打神鞭：多目标连锁金色闪电 */
+  _castMetalWhip(mult) {
+    const extraChain = (this.decrees.metal_chain || 0) * 2 + (this.warlord.bonus.metalExtraChain || 0);
+    const maxTargets = 3 + extraChain;
+    const dmg = Math.round(44 * mult);
+    const alive = this.enemies.filter((e) => e.active).sort((a, b) => b.y - a.y).slice(0, maxTargets);
+    if (!alive.length) return;
+
+    const g = this.add.graphics().setDepth(16);
+    let prevX = this.warlordSprite.x;
+    let prevY = this.warlordBaseY - 22;
+
+    for (const e of alive) {
+      const midX = (prevX + e.x) / 2 + Phaser.Math.Between(-22, 22);
+      const midY = (prevY + e.y) / 2 + Phaser.Math.Between(-16, 16);
+      g.lineStyle(7, 0xfbbf24, 0.45);
+      g.beginPath();
+      g.moveTo(prevX, prevY);
+      g.lineTo(midX, midY);
+      g.lineTo(e.x, e.y);
+      g.strokePath();
+      g.lineStyle(2.8, 0xfef08a, 1);
+      g.beginPath();
+      g.moveTo(prevX, prevY);
+      g.lineTo(midX, midY);
+      g.lineTo(e.x, e.y);
+      g.strokePath();
+
+      this._damageEnemy(e, dmg, Boolean(this.warlord.bonus.armorPierce), 0xfbbf24);
+      prevX = e.x;
+      prevY = e.y;
+    }
+    this.tweens.add({ targets: g, alpha: 0, duration: 300, onComplete: () => g.destroy() });
+  }
+
+  /** 土 → 番天印：天降范围砸击（带屏幕震动 + 60ms 顿帧反馈） */
+  _castEarthSeal(mult) {
+    const stunStacks = this.decrees.earth_stun || 0;
+    const target = this._findClosestEnemy();
+    const tx = target ? target.x : GAME_DESIGN.width / 2;
+    const ty = target ? target.y : 220;
+    const radius = 118 + stunStacks * 28;
+    const dmg = Math.round(62 * mult);
+
+    const stamp = this.add.image(tx, ty - 95, 'sealStamp').setDepth(17).setScale(1.45).setAlpha(0.92);
+    this.tweens.add({
+      targets: stamp,
+      y: ty,
+      scaleX: 1.05,
+      scaleY: 1.05,
+      duration: 145,
+      ease: 'Cubic.easeIn',
+      onComplete: () => {
+        // 砸地瞬间触发 60ms 顿帧 + 强震屏 + 青铜冲击波
+        this.hitStopMs = 60;
+        this.cameras.main.shake(190, 0.014);
+        this._spawnBurst(tx, ty, 16, 0xf59e0b, 'shard');
+
+        const waveRing = this.add.circle(tx, ty, 24, 0xd97706, 0.2).setStrokeStyle(4, 0xfef08a, 0.95).setDepth(16);
+        this.tweens.add({
+          targets: waveRing,
+          scaleX: radius / 24,
+          scaleY: radius / 24,
+          alpha: 0,
+          duration: 300,
+          onComplete: () => waveRing.destroy()
+        });
+
+        for (const e of [...this.enemies]) {
+          if (!e.active) continue;
+          if (Phaser.Math.Distance.Between(tx, ty, e.x, e.y) <= radius + e.radius) {
+            this._damageEnemy(e, dmg, false, 0xf59e0b);
+            if (stunStacks > 0 && e.active) {
+              e.stunMs = Math.max(e.stunMs, 2200);
+            }
+          }
+        }
+
+        this.tweens.add({
+          targets: stamp,
+          alpha: 0,
+          scaleX: 1.25,
+          scaleY: 1.25,
+          duration: 240,
+          onComplete: () => stamp.destroy()
+        });
+      }
+    });
+  }
+
+  /** 水 → 混天绫：全屏击退减速波 */
+  _castWaterSilk(mult) {
+    const surgeStacks = this.decrees.water_surge || 0;
+    const pushDist = Math.round((68 + surgeStacks * 34) * Math.min(1.5, mult));
+    const dmg = Math.round((24 + surgeStacks * 22) * mult);
+
+    const wave = this.add.rectangle(GAME_DESIGN.width / 2, GAME_DESIGN.gateY - 12, GAME_DESIGN.width - 20, 18, 0x06b6d4, 0.65).setDepth(16);
+    wave.setStrokeStyle(3, 0xa5f3fc, 0.95);
+    this.tweens.add({
+      targets: wave,
+      y: GAME_DESIGN.battleTop + 14,
+      alpha: 0,
+      duration: 380,
+      ease: 'Cubic.easeOut',
+      onComplete: () => wave.destroy()
+    });
+
+    for (const e of [...this.enemies]) {
+      if (!e.active) continue;
+      e.y = Math.max(GAME_DESIGN.battleTop + 26, e.y - (e.kind === 'boss' ? pushDist * 0.45 : pushDist));
+      e.slowMs = Math.max(e.slowMs, 3500);
+      this._damageEnemy(e, dmg, false, 0x22d3ee);
+    }
+  }
+
+  /** 木 → 青莲阵门回血与护盾 */
+  _castWoodLotus(mult) {
+    const heal = Math.round((16 + (this.warlord.bonus.woodBonusHeal || 0)) * mult);
+    const shield = Math.round(14 * mult);
+    this._healGate(heal, shield);
+
+    const ring = this.add.circle(GAME_DESIGN.width / 2, GAME_DESIGN.gateY - 14, 28, 0x10b981, 0.24).setDepth(15);
+    ring.setStrokeStyle(3.5, 0x6ee7b7, 0.95);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 4.5,
+      scaleY: 1.8,
+      alpha: 0,
+      duration: 420,
+      onComplete: () => ring.destroy()
+    });
+  }
+
+  _healGate(hpGain, shieldGain = 0) {
+    this.gateHp = Math.min(this.gateMaxHp, this.gateHp + hpGain);
+    this.gateShield = Math.min(this.gateMaxHp, this.gateShield + shieldGain);
+    this._showFloatingText(GAME_DESIGN.width / 2, GAME_DESIGN.gateY - 38, `+${hpGain} HP`, '#34d399', '16px');
+    this._refreshHudAndState();
+  }
+
+  // =========================================================================
+  // 4. 上半屏水墨妖魔波次与每 3 波天劫异变
+  // =========================================================================
+
+  _spawnEnemy(forceKind = null, forceX = null) {
+    const { width, battleTop } = GAME_DESIGN;
+    const isBossWave = this.wave % 5 === 0;
+    let kind = forceKind;
+
+    if (!kind) {
+      if (isBossWave && this.waveEnemiesSpawned === this.waveEnemiesTotal - 1) {
+        kind = 'boss';
+      } else {
+        const roll = Math.random();
+        if (this.wave >= 3 && roll > 0.72) kind = 'golem';
+        else if (this.wave >= 2 && roll > 0.48) kind = 'wraith';
+        else kind = 'grunt';
+      }
+    }
+
+    const scaleWave = 1 + (this.wave - 1) * 0.22;
+    const specs = {
+      grunt: { tex: 'enemy_grunt', hp: Math.round(48 * scaleWave), speed: 24 + this.wave * 1.6, armor: 0, dmg: 12, radius: 22, qi: 16, essence: 3 },
+      golem: { tex: 'enemy_golem', hp: Math.round(92 * scaleWave), speed: 16 + this.wave * 1.1, armor: 0.42, dmg: 20, radius: 26, qi: 24, essence: 6 },
+      wraith: { tex: 'enemy_wraith', hp: Math.round(34 * scaleWave), speed: 40 + this.wave * 2.2, armor: 0, dmg: 10, radius: 19, qi: 18, essence: 4 },
+      boss: { tex: 'enemy_boss', hp: Math.round(360 * scaleWave), speed: 13 + this.wave * 0.6, armor: 0.28, dmg: 38, radius: 40, qi: 50, essence: 22 }
+    };
+    const sp = specs[kind];
+    const x = forceX !== null ? forceX : Phaser.Math.Between(56, width - 56);
+    const y = battleTop + 26;
+
+    const sprite = this.add.image(x, y, sp.tex).setDepth(kind === 'boss' ? 11 : 8);
+    const hpBg = this.add.rectangle(x, y - sp.radius - 8, kind === 'boss' ? 76 : 42, 6, 0x1c1917, 0.9).setDepth(12);
+    const hpFill = this.add.rectangle(x - (kind === 'boss' ? 38 : 21), y - sp.radius - 8, kind === 'boss' ? 76 : 42, 4, kind === 'boss' ? 0xef4444 : 0xf97316)
+      .setOrigin(0, 0.5)
+      .setDepth(13);
+
+    const enemy = {
+      active: true,
+      kind,
+      x,
+      y,
+      hp: sp.hp,
+      maxHp: sp.hp,
+      speed: sp.speed,
+      armor: sp.armor,
+      dmg: sp.dmg,
+      radius: sp.radius,
+      qi: sp.qi,
+      essence: sp.essence,
+      slowMs: 0,
+      stunMs: 0,
+      sprite,
+      hpBg,
+      hpFill
+    };
+    this.enemies.push(enemy);
+
+    if (kind === 'boss') {
+      try { synthAudio.setBossDrumMode(true); synthAudio.playTribulation(); } catch (_) {}
+      this.bossBarContainer.setVisible(true);
+      this._updateBossBar(enemy);
+      this._showBanner(i18n.t('bossWave', this.wave), '#f87171');
+    }
+  }
+
+  _updateBossBar(boss) {
+    if (!boss || !boss.active) {
+      this.bossBarContainer.setVisible(false);
+      try { synthAudio.setBossDrumMode(false); } catch (_) {}
+      return;
+    }
+    this.bossBarContainer.setVisible(true);
+    this.bossHpFill.width = Math.round(316 * Phaser.Math.Clamp(boss.hp / boss.maxHp, 0, 1));
+  }
+
+  _damageEnemy(enemy, rawDmg, ignoreArmor = false, tint = 0xfbbf24) {
+    if (!enemy || !enemy.active) return;
+    const armorCut = (ignoreArmor || this.warlord.bonus.armorPierce) ? 0 : enemy.armor;
+    const finalDmg = Math.max(4, Math.round(rawDmg * (1 - armorCut)));
+    enemy.hp -= finalDmg;
+
+    // 受击闪白
+    enemy.sprite.setTintFill(0xffffff);
+    this.time.delayedCall(75, () => {
+      if (enemy.active && enemy.sprite) enemy.sprite.clearTint();
+    });
+    this._showFloatingText(enemy.x, enemy.y - 16, `-${finalDmg}`, '#fef08a', '15px');
+
+    if (enemy.hp <= 0) {
+      this._killEnemy(enemy, tint);
+    } else {
+      const barW = enemy.kind === 'boss' ? 76 : 42;
+      enemy.hpFill.width = Math.max(2, Math.round(barW * (enemy.hp / enemy.maxHp)));
+      if (enemy.kind === 'boss') this._updateBossBar(enemy);
+    }
+  }
+
+  _damageAllEnemies(dmg, ignoreArmor, tint) {
+    for (const e of [...this.enemies]) {
+      if (e.active) this._damageEnemy(e, dmg, ignoreArmor, tint);
+    }
+  }
+
+  _killEnemy(enemy, tint) {
+    enemy.active = false;
+    this._spawnBurst(enemy.x, enemy.y, enemy.kind === 'boss' ? 22 : 9, tint, 'shard');
+    enemy.sprite.destroy();
+    enemy.hpBg.destroy();
+    enemy.hpFill.destroy();
+
+    if (enemy.kind === 'boss') {
+      this._updateBossBar(null);
+      this.cameras.main.shake(200, 0.015);
+    }
+
+    this.slainCount += 1;
+    const greedMult = 1 + (this.decrees.forge_greed || 0) * 0.35;
+    this.runEssence += Math.max(1, Math.round(enemy.essence * greedMult));
+    this.score += enemy.kind === 'boss' ? 450 : 65;
+    this._addSpiritQi(enemy.qi);
+    this._refreshHudAndState();
+  }
+
+  _addSpiritQi(amount) {
+    const mult = this.warlord.bonus.qiGainMult || 1.0;
+    this.spiritQi += amount * mult;
+    if (this.spiritQi >= this.spiritQiMax && !this.modalActive && !this.isEnded) {
+      this.spiritQi -= this.spiritQiMax;
+      this.spiritQiMax = Math.round(this.spiritQiMax * 1.25);
+      this._openDecreeModal();
+    }
+  }
+
+  _advanceWave() {
+    this.wave += 1;
+    this.waveEnemiesSpawned = 0;
+    this.waveEnemiesTotal = 6 + Math.min(14, this.wave * 2);
+    this.spawnTimerMs = 800;
+    this.score += 150;
+
+    // 每 3 波随机触发一次反套路「天劫异变」
+    if (this.wave % 3 === 0) {
+      this._triggerTribulation();
+    }
+    this._refreshHudAndState();
+  }
+
+  /**
+   * 每 3 波反套路「天劫异变」：
+   * 1) 八卦盘顺时针旋转 90°
+   * 2) 紫雷封印 2 个空格（旁消可破封）
+   * 3) 刷出高风险高回报「真假灵丹」1×1 块
+   */
+  _triggerTribulation() {
+    const types = ['rotate', 'seal', 'pill'];
+    const chosen = types[Phaser.Math.Between(0, types.length - 1)];
+    try { synthAudio.playTribulation(); } catch (_) {}
+    this.cameras.main.shake(150, 0.01);
+
+    try {
+      platformBridge.trackEvent('tribulation_trigger', {
+        tribulation_type: chosen,
+        wave: this.wave
+      });
+    } catch (_) {}
+
+    if (chosen === 'rotate') {
+      // 5×5 八卦盘顺时针旋转 90°
+      const next = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+          const cell = this.board[r][c];
+          if (!cell) continue;
+          const nr = c;
+          const nc = BOARD_SIZE - 1 - r;
+          next[nr][nc] = cell;
+          const nx = ORIGIN_X + nc * CELL_SIZE + CELL_SIZE / 2;
+          const ny = ORIGIN_Y + nr * CELL_SIZE + CELL_SIZE / 2;
+          if (cell.sprite) {
+            this.tweens.add({ targets: cell.sprite, x: nx, y: ny, duration: 280, ease: 'Back.easeOut' });
+          }
+        }
+      }
+      this.board = next;
+      this._showBanner(i18n.t('tribulationRotate'), '#c084fc');
+    } else if (chosen === 'seal') {
+      // 紫雷封印最多 2 个空格
+      const empties = [];
+      for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+          if (!this.board[r][c]) empties.push([r, c]);
+        }
+      }
+      Phaser.Utils.Array.Shuffle(empties);
+      const targets = empties.slice(0, Math.min(2, empties.length));
+      for (const [r, c] of targets) {
+        const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+        const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+        const sp = this.add.image(cx, cy, 'tile_sealed').setDepth(12).setScale(0.5);
+        this.tweens.add({ targets: sp, scaleX: 1, scaleY: 1, duration: 220, ease: 'Back.easeOut' });
+        this.board[r][c] = { sealed: true, sprite: sp };
+        this._spawnBurst(cx, cy, 8, 0xa855f7, 'spark');
+      }
+      this._showBanner(i18n.t('tribulationSeal'), '#d8b4fe');
+    } else {
+      // 在任意空闲或第 2 个槽位注入 1×1「真假灵丹」诱饵块
+      const idx = this.trayPieces.findIndex((p) => p !== null);
+      const slot = idx >= 0 ? idx : 1;
+      if (this.trayPieces[slot]?.container) this.trayPieces[slot].container.destroy();
+      const shape = PIECE_SHAPES[0];
+      const visual = this._createPieceVisual(shape, 'fire', true, 36, 14);
+      visual.setPosition(TRAY_SLOTS_X[slot], TRAY_Y);
+      this.trayPieces[slot] = { shape, element: 'fire', isPill: true, container: visual, slotIndex: slot };
+      this._showBanner(i18n.t('tribulationPill'), '#fde047');
+    }
+    this._refreshHudAndState();
+  }
+
+  // =========================================================================
+  // 5. 局内肉鸽「元始敕令」青铜竹简三选一（含激励广告重抽）
+  // =========================================================================
+
+  _openDecreeModal() {
+    this.modalActive = true;
+    try { synthAudio.playDecree(); } catch (_) {}
+    this._renderDecreeModal(false);
+  }
+
+  _renderDecreeModal(isReroll = false) {
+    if (this.decreeModal) {
+      this.decreeModal.destroy();
+      this.decreeModal = null;
+    }
+
+    const { width, height } = GAME_DESIGN;
+    const container = this.add.container(0, 0).setDepth(55);
+    this.decreeModal = container;
+
+    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.78)
+      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
+    const panel = this.add.rectangle(width / 2, height / 2, 470, 620, 0x161214, 0.98);
+    panel.setStrokeStyle(2.5, 0xeab308, 0.95);
+
+    const title = this.add.text(width / 2, height / 2 - 258, i18n.t('decreeTitle'), {
+      fontSize: '28px',
+      fontStyle: 'bold',
+      color: '#eab308',
+      letterSpacing: 3
+    }).setOrigin(0.5);
+
+    const sub = this.add.text(width / 2, height / 2 - 222, isReroll ? i18n.t('decreeRerolled') : i18n.t('decreeSub'), {
+      fontSize: '14px',
+      fontStyle: 'bold',
+      color: isReroll ? '#34d399' : '#a8a29e'
+    }).setOrigin(0.5);
+
+    container.add([dim, panel, title, sub]);
+
+    // 随机抽取 3 张青铜竹简强化卡
+    const picks = Phaser.Utils.Array.Shuffle([...DECREE_POOL]).slice(0, 3);
+    picks.forEach((card, idx) => {
+      const cy = height / 2 - 122 + idx * 126;
+      const meta = i18n.pack.decrees[card.id];
+      const slipBg = this.add.rectangle(width / 2, cy, 412, 106, 0x221a16, 0.98);
+      slipBg.setStrokeStyle(2.2, card.color, 0.95);
+      slipBg.setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-10, -10, 432, 126),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true
+      });
+
+      const icon = this.add.image(width / 2 - 166, cy, ELEMENTS[card.element].texture).setScale(0.84);
+      const nameTxt = this.add.text(width / 2 - 122, cy - 20, meta.name, {
+        fontSize: '17px',
+        fontStyle: 'bold',
+        color: '#fef08a'
+      }).setOrigin(0, 0.5);
+      const descTxt = this.add.text(width / 2 - 122, cy + 14, meta.desc, {
+        fontSize: '13px',
+        color: '#d6d3d1',
+        wordWrap: { width: 310 }
+      }).setOrigin(0, 0.5);
+
+      slipBg.on('pointerdown', () => {
+        this._applyDecree(card.id);
+        container.destroy();
+        this.decreeModal = null;
+        this.modalActive = false;
+      });
+
+      container.add([slipBg, icon, nameTxt, descTxt]);
+    });
+
+    // 底部激励广告重抽按钮：REROLL DECREES (AD)
+    const rerollBg = this.add.rectangle(width / 2, height / 2 + 244, 340, 52, 0x7c3aed, 1);
+    rerollBg.setStrokeStyle(2, 0xc4b5fd, 0.95);
+    rerollBg.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-12, -12, 364, 76),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
+    const rerollTxt = this.add.text(width / 2, height / 2 + 244, i18n.t('decreeReroll'), {
+      fontSize: '16px',
+      fontStyle: 'bold',
+      color: '#ffffff'
+    }).setOrigin(0.5);
+
+    let rerolling = false;
+    rerollBg.on('pointerdown', async () => {
+      if (rerolling) return;
+      rerolling = true;
+      const res = await platformBridge.showRewardedBreak('reroll_decree');
+      rerolling = false;
+      if (!this.decreeModal) return;
+      if (res.granted) {
+        try {
+          synthAudio.playDecree();
+          platformBridge.trackEvent('rewarded_reroll', { wave: this.wave });
+        } catch (_) {}
+        this._renderDecreeModal(true);
+      } else {
+        sub.setText(i18n.t('adSkipped')).setColor('#f87171');
+      }
+    });
+
+    container.add([rerollBg, rerollTxt]);
+  }
+
+  _applyDecree(decreeId) {
+    this.decrees[decreeId] = (this.decrees[decreeId] || 0) + 1;
+    try {
+      synthAudio.playDecree();
+      platformBridge.trackEvent('decree_pick', { decree_id: decreeId, wave: this.wave });
+    } catch (_) {}
+
+    if (decreeId === 'iron_gate') {
+      this.gateMaxHp += 40;
+      this._healGate(40, 15);
+    }
+    if (this.warlord.bonus.decreeHeal) {
+      this._healGate(this.warlord.bonus.decreeHeal, 8);
+    }
+    this._refreshHudAndState();
+  }
+
+  // =========================================================================
+  // 6. 死局/濒死判定与「太乙真火」激励复活
+  // =========================================================================
+
+  _checkNoMovesCondition() {
+    if (this.isEnded || this.modalActive) return;
+    const remaining = this.trayPieces.filter((p) => p !== null);
+    if (!remaining.length) return;
+    const canFitAny = remaining.some((p) => this._canShapeFitAnywhere(p.shape));
+    if (!canFitAny) {
+      this._triggerNearDeath(i18n.t('noMovesHint'));
+    }
+  }
+
+  _triggerNearDeath(reasonText) {
+    if (this.isEnded || this.modalActive) return;
+    if (!this.revived) {
+      this._openTaiyiReviveModal(reasonText);
+    } else {
+      this._finishRun();
+    }
+  }
+
+  _openTaiyiReviveModal(reasonText) {
+    this.modalActive = true;
+    try { synthAudio.stopWarDrums(); } catch (_) {}
+    const { width, height } = GAME_DESIGN;
+    const container = this.add.container(0, 0).setDepth(60);
+    this.reviveModal = container;
+
+    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.82)
+      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
+    const box = this.add.rectangle(width / 2, height / 2, 436, 368, 0x1a1214, 0.98);
+    box.setStrokeStyle(2.5, 0xef4444, 0.95);
+
+    const warn = this.add.text(width / 2, height / 2 - 134, reasonText, {
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#f87171'
+    }).setOrigin(0.5);
+
+    const title = this.add.text(width / 2, height / 2 - 86, i18n.t('reviveTitle'), {
+      fontSize: '28px',
+      fontStyle: 'bold',
+      color: '#fde047'
+    }).setOrigin(0.5);
+
+    const desc = this.add.text(width / 2, height / 2 - 22, i18n.t('reviveDesc'), {
+      fontSize: '14px',
+      color: '#e7e5e4',
+      align: 'center',
+      lineSpacing: 6
+    }).setOrigin(0.5);
+
+    const revBg = this.add.rectangle(width / 2, height / 2 + 64, 356, 58, 0xdc2626, 1);
+    revBg.setStrokeStyle(2, 0xfbbf24, 0.95);
+    revBg.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-12, -12, 380, 82),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
+    const revTxt = this.add.text(width / 2, height / 2 + 64, i18n.t('reviveBtn'), {
+      fontSize: '16px',
+      fontStyle: 'bold',
+      color: '#fffbeb'
+    }).setOrigin(0.5);
+
+    const endBg = this.add.rectangle(width / 2, height / 2 + 134, 240, 44, 0x262022, 1);
+    endBg.setStrokeStyle(1.5, 0x57534e, 0.9);
+    endBg.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-10, -10, 260, 64),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
+    const endTxt = this.add.text(width / 2, height / 2 + 134, i18n.t('giveUpBtn'), {
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#a8a29e'
+    }).setOrigin(0.5);
+
+    let busy = false;
+    revBg.on('pointerdown', async () => {
+      if (busy) return;
+      busy = true;
+      const res = await platformBridge.showRewardedBreak('revive_taiyi');
+      busy = false;
+      if (!this.reviveModal) return;
+      if (res.granted) {
+        container.destroy();
+        this.reviveModal = null;
+        this._executeTaiyiRevive();
+      } else {
+        warn.setText(i18n.t('adSkipped'));
+      }
+    });
+
+    endBg.on('pointerdown', () => {
+      container.destroy();
+      this.reviveModal = null;
+      this.modalActive = false;
+      this._finishRun();
+    });
+
+    container.add([dim, box, warn, title, desc, revBg, revTxt, endBg, endTxt]);
+  }
+
+  /**
+   * 执行「太乙真火」复活：焚清最拥挤的 2 行、击退妖魔、回复 60% 阵门血量、刷新 3 块新拼图
+   */
+  _executeTaiyiRevive() {
+    this.revived = true;
+    this.modalActive = false;
+
+    // 找出最拥挤的 2 行清空
+    const rowCounts = [];
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      let cnt = 0;
+      for (let c = 0; c < BOARD_SIZE; c++) if (this.board[r][c]) cnt += 1;
+      rowCounts.push({ r, cnt });
+    }
+    rowCounts.sort((a, b) => b.cnt - a.cnt);
+    const clearRows = rowCounts.slice(0, 2).map((x) => x.r);
+
+    for (const r of clearRows) {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        const cell = this.board[r][c];
+        if (cell?.sprite) cell.sprite.destroy();
+        this.board[r][c] = null;
+        const cx = ORIGIN_X + c * CELL_SIZE + CELL_SIZE / 2;
+        const cy = ORIGIN_Y + r * CELL_SIZE + CELL_SIZE / 2;
+        this._spawnBurst(cx, cy, 7, 0xf97316, 'spark');
+      }
+    }
+
+    // 击退近门妖魔并造成真火灼伤
+    for (const e of [...this.enemies]) {
+      if (!e.active) continue;
+      e.y = Math.max(GAME_DESIGN.battleTop + 32, e.y - 130);
+      this._damageEnemy(e, 55, true, 0xef4444);
+    }
+
+    this.gateHp = Math.max(this.gateHp, Math.round(this.gateMaxHp * 0.6));
+    this.gateShield = Math.max(this.gateShield, 25);
+
+    this._refillTray(false);
+    this.cameras.main.shake(220, 0.014);
+    try {
+      synthAudio.playRevive();
+      synthAudio.startWarDrums(this.enemies.some((e) => e.active && e.kind === 'boss'));
+      platformBridge.trackEvent('rewarded_revive', { wave: this.wave, score: this.score });
+    } catch (_) {}
+
+    this._showBanner(i18n.t('reviveTitle'), '#fde047');
+    this._refreshHudAndState();
+  }
+
+  _finishRun() {
+    if (this.isEnded) return;
     this.isEnded = true;
-    this.physics.world.pause();
     try { synthAudio.stopWarDrums(); } catch (_) {}
     try { platformBridge.gameplayStop(); } catch (_) {}
 
@@ -538,200 +1517,175 @@ export class GameScene extends Phaser.Scene {
     try {
       platformBridge.trackEvent('game_over', {
         score: this.score,
-        run_jade: this.runJade,
-        near_misses: this.nearMissCount,
-        fever_count: this.feverCount,
+        wave: this.wave,
+        slain: this.slainCount,
+        run_essence: this.runEssence,
+        lines_cleared: this.linesCleared,
         duration_sec: durationSec,
         revived: this.revived ? 1 : 0,
-        trail_id: this.trailSkin.id
+        warlord_id: this.warlord.id
       });
     } catch (_) {}
 
-    this.time.delayedCall(280, () => {
+    this.time.delayedCall(260, () => {
       this.scene.start('ResultScene', {
         score: this.score,
-        runJade: this.runJade,
-        nearMissCount: this.nearMissCount,
-        feverCount: this.feverCount,
-        combo: this.combo,
-        feverStreak: this.feverStreak,
+        wave: this.wave,
+        slainCount: this.slainCount,
+        runEssence: this.runEssence,
         durationSec,
-        elapsedMs: this.elapsedMs,
         revived: this.revived,
-        trailId: this.trailSkin.id
+        warlordId: this.warlord.id
       });
     });
   }
 
-  _spawnBurst(x, y, count, tint, texture = 'spark') {
+  // =========================================================================
+  // 7. 暂停、音效、辅助几何与主循环（含 60ms 顿帧）
+  // =========================================================================
+
+  _toggleSound() {
+    const next = !synthAudio.enabled;
+    try {
+      synthAudio.setEnabled(next);
+      if (next) { synthAudio.ensureContext(); synthAudio.playClick(); }
+    } catch (_) {}
+    this._refreshHudAndState();
+    try {
+      platformBridge.saveCloudProgress({ soundEnabled: next }).catch(() => {});
+    } catch (_) {}
+  }
+
+  _togglePause() {
+    if (this.isEnded || this.decreeModal || this.reviveModal) return;
+    this.isPaused = !this.isPaused;
+    if (this.isPaused) {
+      try { synthAudio.stopWarDrums(); platformBridge.gameplayStop(); } catch (_) {}
+      this._showPauseOverlay();
+    } else {
+      if (this.pauseOverlay) { this.pauseOverlay.destroy(); this.pauseOverlay = null; }
+      try {
+        synthAudio.startWarDrums(this.enemies.some((e) => e.active && e.kind === 'boss'));
+        platformBridge.gameplayStart({ resume: 1 });
+      } catch (_) {}
+    }
+  }
+
+  _showPauseOverlay() {
+    const { width, height } = GAME_DESIGN;
+    const container = this.add.container(0, 0).setDepth(58);
+    this.pauseOverlay = container;
+    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.76)
+      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
+    const box = this.add.rectangle(width / 2, height / 2, 344, 252, 0x161214, 0.98).setStrokeStyle(2, 0xd99b38, 0.95);
+    const title = this.add.text(width / 2, height / 2 - 74, i18n.t('pauseTitle'), {
+      fontSize: '28px', fontStyle: 'bold', color: '#eab308'
+    }).setOrigin(0.5);
+
+    const resBg = this.add.rectangle(width / 2, height / 2, 224, 52, 0xb91c1c).setStrokeStyle(2, 0xeab308, 0.9)
+      .setInteractive({ hitArea: new Phaser.Geom.Rectangle(-10, -10, 244, 72), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    const resTxt = this.add.text(width / 2, height / 2, i18n.t('resume'), { fontSize: '19px', fontStyle: 'bold', color: '#fff' }).setOrigin(0.5);
+    resBg.on('pointerdown', () => this._togglePause());
+
+    const menuBg = this.add.rectangle(width / 2, height / 2 + 72, 224, 46, 0x261f1d).setStrokeStyle(1.5, 0x78350f, 0.9)
+      .setInteractive({ hitArea: new Phaser.Geom.Rectangle(-10, -10, 244, 66), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    const menuTxt = this.add.text(width / 2, height / 2 + 72, i18n.t('mainMenu'), { fontSize: '17px', fontStyle: 'bold', color: '#d6d3d1' }).setOrigin(0.5);
+    menuBg.on('pointerdown', () => {
+      try { synthAudio.stopWarDrums(); } catch (_) {}
+      this.scene.start('MenuScene', { save: platformBridge.getLocalSave() });
+    });
+
+    container.add([dim, box, title, resBg, resTxt, menuBg, menuTxt]);
+  }
+
+  _findClosestEnemy() {
+    let best = null;
+    for (const e of this.enemies) {
+      if (e.active && (!best || e.y > best.y)) best = e;
+    }
+    return best;
+  }
+
+  _distToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Phaser.Math.Distance.Between(px, py, x1, y1);
+    const t = Phaser.Math.Clamp(((px - x1) * dx + (py - y1) * dy) / len2, 0, 1);
+    return Phaser.Math.Distance.Between(px, py, x1 + t * dx, y1 + t * dy);
+  }
+
+  _spawnBurst(x, y, count, tint, tex = 'spark') {
     for (let i = 0; i < count; i++) {
-      const p = this.add.image(x, y, texture).setDepth(14);
+      const p = this.add.image(x, y, tex).setDepth(26);
       p.setTint(tint);
-      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      const spd = Phaser.Math.FloatBetween(95, 290);
-      p.vx = Math.cos(angle) * spd;
-      p.vy = Math.sin(angle) * spd;
-      p.spin = Phaser.Math.FloatBetween(-360, 360);
+      const a = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const spd = Phaser.Math.FloatBetween(80, 250);
+      p.vx = Math.cos(a) * spd;
+      p.vy = Math.sin(a) * spd;
+      p.spin = Phaser.Math.FloatBetween(-320, 320);
       p.life = 0;
-      p.maxLife = Phaser.Math.Between(260, 460);
+      p.maxLife = Phaser.Math.Between(240, 440);
       p.baseScale = Phaser.Math.FloatBetween(0.55, 1.05);
       p.setScale(p.baseScale);
       this.fxParticles.push(p);
     }
   }
 
-  _showFloatingText(x, y, text, color, fontSize = '20px') {
-    const label = this.add.text(x, y, text, {
+  _showFloatingText(x, y, text, color, fontSize = '18px') {
+    const t = this.add.text(x, y, text, {
       fontSize,
       fontStyle: 'bold',
       color,
-      stroke: '#090714',
-      strokeThickness: 5
-    }).setOrigin(0.5).setDepth(30);
-    label.setScale(0.75);
+      stroke: '#0b0a10',
+      strokeThickness: 4
+    }).setOrigin(0.5).setDepth(35);
     this.tweens.add({
-      targets: label,
-      scaleX: 1.08,
-      scaleY: 1.08,
-      duration: 110,
-      yoyo: true
-    });
-    this.tweens.add({
-      targets: label,
-      y: y - 54,
+      targets: t,
+      y: y - 42,
       alpha: 0,
-      duration: 720,
-      onComplete: () => label.destroy()
+      duration: 680,
+      onComplete: () => t.destroy()
+    });
+  }
+
+  _showBanner(text, color = '#fbbf24') {
+    this.bannerText.setText(text).setColor(color).setAlpha(1);
+    this.tweens.killTweensOf(this.bannerText);
+    this.tweens.add({
+      targets: this.bannerText,
+      alpha: 0.75,
+      duration: 2400
     });
   }
 
   update(_time, delta) {
-    if (this.isPaused || this.isEnded) return;
+    if (this.isPaused || this.modalActive || this.isEnded) return;
 
-    // 顿帧打击反馈（Hit-Stop）：Fever 撞碎障碍物时短暂停滞 42ms
+    // 60ms 顿帧反馈（番天印砸击）
     if (this.hitStopMs > 0) {
       this.hitStopMs = Math.max(0, this.hitStopMs - delta);
-      if (this.hitStopMs > 0) {
-        if (!this.physics.world.isPaused) this.physics.world.pause();
-        return;
-      }
-      if (this.physics.world.isPaused) this.physics.world.resume();
+      return;
     }
 
     const dt = delta / 1000;
-    const { width, height } = GAME_DESIGN;
     this.elapsedMs += delta;
 
-    const speedFactor = this._getSpeedFactor();
-    // 同步动态低频战鼓节奏强度
-    try {
-      synthAudio.setDrumIntensity(Math.min(1, (speedFactor - 1) / 1.8), this.isFever);
-    } catch (_) {}
-
-    // 距离得分平滑累加
-    this.distScoreAcc += delta;
-    if (this.distScoreAcc >= 240) {
-      this.distScoreAcc = 0;
-      this.score += this.isFever ? 5 : 2;
-      this._updateHud();
+    // 背景八卦盘慢转 & 顶部浓雾流动
+    if (this.forgeBaguaBg) this.forgeBaguaBg.angle += 7 * dt;
+    for (const f of this.fogBands) {
+      f.x += f.vx * dt;
+      if (f.x < -60) f.x = GAME_DESIGN.width + 60;
+      if (f.x > GAME_DESIGN.width + 60) f.x = -60;
     }
 
-    // 狂热模式倒计时
-    if (this.isFever) {
-      this.feverRemainingMs = Math.max(0, this.feverRemainingMs - delta);
-      this.feverFrame.setStrokeStyle(6, 0xf97316, 0.55 + Math.sin(this.elapsedMs * 0.02) * 0.3);
-      if (this.feverRemainingMs <= 0) {
-        this.isFever = false;
-        this.invulnerableUntil = 950;
-        this.feverFrame.setStrokeStyle(6, 0xf97316, 0);
-        this._showFloatingText(width / 2, 240, 'FEVER ENDED', '#fdba74', '18px');
-      }
-      this._updateHud();
-    }
-
-    // 吸宝灵符倒计时
-    if (this.magnetRemainingMs > 0) {
-      this.magnetRemainingMs = Math.max(0, this.magnetRemainingMs - delta);
-      this._updateHud();
-    }
-
-    // 星空流云与 Fever 高速流线滚动
-    for (const m of this.motesBg) {
-      m.y += m.baseSpeed * speedFactor * dt;
-      if (m.y > height + 4) {
-        m.y = -4;
-        m.x = Phaser.Math.Between(0, width);
-      }
-    }
-    for (const line of this.speedLines) {
-      line.setAlpha(this.isFever ? 0.35 : 0);
-      if (this.isFever) {
-        line.y += line.speed * dt;
-        if (line.y > height + 80) {
-          line.y = -80;
-          line.x = Phaser.Math.Between(16, width - 16);
-        }
-      }
-    }
-
-    // 键盘与单指按住滑动双模式操控
-    const keyMoveSpeed = 480;
-    let vx = 0;
-    if (this.cursors?.left?.isDown || this.keyA?.isDown) {
-      vx = -keyMoveSpeed;
-      this.pointerTargetX = null;
-    } else if (this.cursors?.right?.isDown || this.keyD?.isDown) {
-      vx = keyMoveSpeed;
-      this.pointerTargetX = null;
-    } else if (this.pointerTargetX !== null) {
-      const diff = this.pointerTargetX - this.player.x;
-      if (Math.abs(diff) > 3) {
-        vx = Phaser.Math.Clamp(diff * 18, -760, 760);
-      }
-    }
-    this.player.setVelocityX(vx);
-    this.player.setAngle(Phaser.Math.Clamp(vx * 0.03, -17, 17));
-
-    // 双风火轮跟随脚底高速旋转
-    const wheelScale = this.isFever ? 0.96 : 0.78;
-    this.leftWheel.setPosition(this.player.x - 16, this.player.y + 36).setScale(wheelScale);
-    this.rightWheel.setPosition(this.player.x + 16, this.player.y + 36).setScale(wheelScale);
-    const wheelSpin = (this.isFever ? 980 : 540) * dt;
-    this.leftWheel.angle += wheelSpin;
-    this.rightWheel.angle -= wheelSpin;
-
-    // 实时发射当前装备 TRAILS 皮肤的流光拖尾
-    this.trailEmitAcc += delta;
-    const emitInterval = this.isFever ? 18 : 30;
-    if (this.trailEmitAcc >= emitInterval) {
-      this.trailEmitAcc = 0;
-      const side = Math.random() > 0.5 ? -16 : 16;
-      const p = this.add.image(
-        this.player.x + side + Phaser.Math.Between(-5, 5),
-        this.player.y + 42,
-        'spark'
-      ).setDepth(5);
-      const tint = this.isFever
-        ? (Math.random() > 0.4 ? 0xfef08a : 0xef4444)
-        : (Math.random() > 0.45 ? this.trailSkin.primaryHex : this.trailSkin.secondaryHex);
-      p.setTint(tint);
-      p.vx = -vx * 0.08 + Phaser.Math.FloatBetween(-22, 22);
-      p.vy = Phaser.Math.FloatBetween(120, 210) * speedFactor;
-      p.spin = 0;
-      p.life = 0;
-      p.maxLife = this.isFever ? 380 : 300;
-      p.baseScale = this.isFever ? Phaser.Math.FloatBetween(0.75, 1.25) : Phaser.Math.FloatBetween(0.45, 0.9);
-      p.setScale(p.baseScale);
-      this.fxParticles.push(p);
-    }
-
-    // 更新全部粒子（拖尾、火花、碎片）
+    // 粒子更新
     for (let i = this.fxParticles.length - 1; i >= 0; i--) {
       const p = this.fxParticles[i];
       p.life += delta;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (p.spin) p.angle += p.spin * dt;
+      p.angle += p.spin * dt;
       const ratio = 1 - p.life / p.maxLife;
       p.setAlpha(Math.max(0, ratio));
       p.setScale(Math.max(0.05, ratio * p.baseScale));
@@ -741,96 +1695,76 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // 护体金钟 / 无敌闪烁 / 吸宝灵符 / Fever 光环跟随
-    if (this.invulnerableUntil > 0) {
-      this.invulnerableUntil = Math.max(0, this.invulnerableUntil - delta);
-      this.player.setAlpha(Math.sin(this.elapsedMs * 0.03) > 0 ? 1 : 0.45);
-    } else {
-      this.player.setAlpha(1);
-    }
-    this.shieldRing.setPosition(this.player.x, this.player.y);
-    this.shieldRing.setVisible(this.hasShield || this.invulnerableUntil > 0);
-    this.magnetRing.setPosition(this.player.x, this.player.y);
-    this.magnetRing.setVisible(this.magnetRemainingMs > 0);
-    if (this.magnetRemainingMs > 0) {
-      this.magnetRing.setScale(0.95 + Math.sin(this.elapsedMs * 0.015) * 0.12);
-    }
-    this.feverAura.setPosition(this.player.x, this.player.y);
-    this.feverAura.setVisible(this.isFever);
-    if (this.isFever) {
-      this.feverAura.setScale(1.0 + Math.sin(this.elapsedMs * 0.025) * 0.14);
+    // 波次妖魔生成
+    if (this.waveEnemiesSpawned < this.waveEnemiesTotal) {
+      this.spawnTimerMs -= delta;
+      if (this.spawnTimerMs <= 0) {
+        this._spawnEnemy();
+        this.waveEnemiesSpawned += 1;
+        this.spawnTimerMs = Math.max(900, 2150 - this.wave * 95);
+      }
+    } else if (this.enemies.every((e) => !e.active)) {
+      this.waveClearPauseMs += delta;
+      if (this.waveClearPauseMs >= 900) {
+        this.waveClearPauseMs = 0;
+        this._advanceWave();
+      }
     }
 
-    // 自适应生成节奏（随分数平滑提速）
-    const collectInterval = Math.max(320, 680 / Math.sqrt(speedFactor));
-    const obstacleInterval = Math.max(300, 820 / Math.pow(speedFactor, 0.72));
-    this.collectSpawnAcc += delta;
-    this.obstacleSpawnAcc += delta;
-    if (this.collectSpawnAcc >= collectInterval) {
-      this.collectSpawnAcc = 0;
-      this._spawnCollectible();
-    }
-    if (this.obstacleSpawnAcc >= obstacleInterval) {
-      this.obstacleSpawnAcc = 0;
-      this._spawnObstacle();
-    }
+    // 妖魔推进与撞击青铜阵门
+    const gateLineY = GAME_DESIGN.gateY - 22;
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      if (!e.active) {
+        this.enemies.splice(i, 1);
+        continue;
+      }
 
-    // 收集物遍历：吸宝灵符磁吸 + 越界回收（严格使用 Phaser 4 兼容的 getChildren().slice()）
-    const collectiblesList = this.collectibles.getChildren().slice();
-    for (const obj of collectiblesList) {
-      if (!obj || !obj.active) continue;
-      if (this.magnetRemainingMs > 0 && obj.getData('itemType') === 'jade') {
-        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, obj.x, obj.y);
-        if (dist < 250) {
-          const angle = Phaser.Math.Angle.Between(obj.x, obj.y, this.player.x, this.player.y);
-          obj.setVelocity(Math.cos(angle) * 640, Math.sin(angle) * 640);
+      if (e.stunMs > 0) {
+        e.stunMs = Math.max(0, e.stunMs - delta);
+      } else {
+        const slowFactor = e.slowMs > 0 ? 0.45 : 1.0;
+        if (e.slowMs > 0) e.slowMs = Math.max(0, e.slowMs - delta);
+        e.y += e.speed * slowFactor * dt;
+      }
+
+      e.sprite.setPosition(e.x, e.y);
+      const barW = e.kind === 'boss' ? 76 : 42;
+      e.hpBg.setPosition(e.x, e.y - e.radius - 8);
+      e.hpFill.setPosition(e.x - barW / 2, e.y - e.radius - 8);
+
+      // 撞击商周青铜阵门
+      if (e.y >= gateLineY) {
+        let dmg = e.dmg;
+        if (this.gateShield > 0) {
+          const absorbed = Math.min(this.gateShield, dmg);
+          this.gateShield -= absorbed;
+          dmg -= absorbed;
+        }
+        if (dmg > 0) this.gateHp = Math.max(0, this.gateHp - dmg);
+
+        try { synthAudio.playGateHit(); } catch (_) {}
+        this.cameras.main.shake(150, 0.011);
+        this._spawnBurst(e.x, gateLineY, 10, 0xef4444, 'shard');
+        this._showFloatingText(e.x, gateLineY - 24, `-${e.dmg}`, '#f87171', '18px');
+
+        if (e.kind === 'boss') {
+          // 妖王撞门后小幅回弹继续压迫，不直接白给消失
+          e.y -= 78;
+        } else {
+          e.active = false;
+          e.sprite.destroy();
+          e.hpBg.destroy();
+          e.hpFill.destroy();
+          this.enemies.splice(i, 1);
+        }
+
+        this._refreshHudAndState();
+        if (this.gateHp <= 0) {
+          this._triggerNearDeath(i18n.t('gateFallenHint'));
+          return;
         }
       }
-      if (obj.y > height + 50) {
-        if (obj.getData('itemType') === 'jade' && !this.isFever) {
-          this.combo = 0;
-          this.feverStreak = 0;
-          this._updateHud();
-        }
-        obj.destroy();
-      }
-    }
-
-    // 障碍物遍历：擦身而过（Near-Miss）实时判定 + 越界回收
-    const obstaclesList = this.obstacles.getChildren().slice();
-    for (const obj of obstaclesList) {
-      if (!obj || !obj.active) continue;
-
-      if (!this.isFever && this.invulnerableUntil <= 0 && !obj.getData('nearMissed')) {
-        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, obj.x, obj.y);
-        // 贴近障碍物边缘闪避（距离 < 82px 且正在擦过玩家身体高度）
-        if (dist < 82 && obj.y >= this.player.y - 22 && obj.y <= this.player.y + 42) {
-          obj.setData('nearMissed', true);
-          this.nearMissCount += 1;
-          this.score += 50;
-          try { synthAudio.playNearMiss(); } catch (_) {}
-          const midX = (this.player.x + obj.x) / 2;
-          const midY = (this.player.y + obj.y) / 2;
-          this._spawnBurst(midX, midY, 10, 0xfef08a, 'spark');
-          this._showFloatingText(this.player.x, this.player.y - 54, '+50 NEAR MISS!', '#fde047', '22px');
-          try {
-            platformBridge.trackEvent('near_miss', {
-              score: this.score,
-              near_miss_count: this.nearMissCount
-            });
-          } catch (_) {}
-          this._updateHud();
-        }
-      }
-
-      if (obj.y > height + 65 || obj.x < -70 || obj.x > width + 70) {
-        obj.destroy();
-      }
-    }
-
-    // 同步玩家实时坐标至只读状态快照（供手机滑动验收测试验证）
-    if (typeof window !== 'undefined' && window.__GAME_STATE__) {
-      window.__GAME_STATE__.playerX = Math.round(this.player.x);
     }
   }
 }

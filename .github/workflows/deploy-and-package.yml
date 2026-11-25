@@ -6,15 +6,18 @@ on:
   workflow_dispatch:
     inputs:
       portal:
-        description: '门户打包目标（generic / poki / crazygames / telegram）'
+        description: '门户打包目标（generic / playgama / crazygames / gamemonetize / gamepix / telegram / poki）'
         required: false
         default: 'generic'
         type: choice
         options:
           - generic
-          - poki
+          - playgama
           - crazygames
+          - gamemonetize
+          - gamepix
           - telegram
+          - poki
 
 permissions:
   contents: read
@@ -47,7 +50,7 @@ jobs:
 
       - name: 执行生产构建（注入公开运行配置）
         env:
-          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'celestial-rush-v1' }}
+          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'investiture-relic-forge-v1' }}
           VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID || secrets.GA4_MEASUREMENT_ID }}
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}

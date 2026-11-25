@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * 门户分发包打包脚本：生成符合 Poki / CrazyGames 规范的 dist-portal.zip
+ * 全球零成本多平台门户分发包打包脚本：生成 dist-portal.zip
+ * 兼容：generic（CrazyGames/GameMonetize/itch.io 无外链通用包）、playgama、crazygames、gamemonetize、gamepix、telegram、poki
  *
- * 检查项：
- * 1. 确保 dist/ 根目录直接存在 index.html，且采用相对路径资源引用
- * 2. 支持按参数 --portal=poki|crazygames|generic 按需注入门户官方 SDK 标签
- * 3. 自动校验体积红线（Poki 建议首包 < 5MB、硬上限 15MB）
+ * 自动校验红线：
+ * 1. dist/ 根目录直接存在 index.html，全部资源均为相对路径（无 /assets/ 绝对路径）
+ * 2. generic 通用包无任何外部脚本依赖，弱网秒开
+ * 3. 包体严格校验远小于 2MB（软红线 2MB，硬上限 5MB）
  */
 
 import fs from 'node:fs';
@@ -17,17 +18,20 @@ const distDir = path.join(rootDir, 'dist');
 const portalTmpDir = path.join(rootDir, '.portal-stage');
 const outZip = path.join(rootDir, 'dist-portal.zip');
 
-const SOFT_LIMIT_MB = 5;
-const HARD_LIMIT_MB = 15;
+const SOFT_LIMIT_MB = 2;
+const HARD_LIMIT_MB = 5;
 
 const portalArg = process.argv.find((a) => a.startsWith('--portal='));
 const portal = portalArg ? portalArg.split('=')[1].trim().toLowerCase() : 'generic';
 
 const PORTAL_SDK_SNIPPETS = {
-  poki: '<script src="https://game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>',
+  generic: '<!-- 通用零外链分发包：完全符合 CrazyGames / GameMonetize / itch.io 离线静态包规范 -->',
+  playgama: '<script src="https://bridge.playgama.com/v1/stable/playgama-bridge.js"></script>',
   crazygames: '<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>',
+  gamemonetize: '<!-- GameMonetize SDK 将由平台壳层按 Game ID 注入 -->',
+  gamepix: '<script src="https://integration.gamepix.com/sdk/v3/gamepix.sdk.js"></script>',
   telegram: '<script src="https://telegram.org/js/telegram-web-app.js"></script>',
-  generic: '<!-- 通用分发包：上传 Poki/CrazyGames 时可传 --portal=poki 或 --portal=crazygames 自动注入对应官方 SDK -->'
+  poki: '<script src="https://game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>'
 };
 
 if (!fs.existsSync(distDir) || !fs.existsSync(path.join(distDir, 'index.html'))) {
@@ -39,7 +43,6 @@ fs.rmSync(portalTmpDir, { recursive: true, force: true });
 fs.rmSync(outZip, { force: true });
 fs.cpSync(distDir, portalTmpDir, { recursive: true });
 
-// 按目标门户注入官方 SDK 标签，并校验无绝对根路径引用
 const indexPath = path.join(portalTmpDir, 'index.html');
 let html = fs.readFileSync(indexPath, 'utf8');
 const snippet = PORTAL_SDK_SNIPPETS[portal] || PORTAL_SDK_SNIPPETS.generic;
@@ -51,7 +54,11 @@ if (/src="\/assets\//.test(html) || /href="\/assets\//.test(html)) {
   process.exit(1);
 }
 
-// 打包 zip（优先使用系统 zip，缺省回退 python3 zipfile）
+if (portal === 'generic' && /<script[^>]+src=["']https?:\/\//i.test(html)) {
+  console.error('❌ 通用分发包 dist-portal.zip 检测到外部 script 依赖，违反零外链规范！');
+  process.exit(1);
+}
+
 try {
   execFileSync('zip', ['-r', '-q', outZip, '.'], { cwd: portalTmpDir });
 } catch (_) {
@@ -71,14 +78,14 @@ fs.rmSync(portalTmpDir, { recursive: true, force: true });
 const stats = fs.statSync(outZip);
 const sizeMb = stats.size / (1024 * 1024);
 
-console.log(`✅ 门户分发包生成成功：dist-portal.zip`);
+console.log('✅ 门户分发包生成成功：dist-portal.zip');
 console.log(`   - 目标门户：${portal}`);
-console.log(`   - 压缩包体积：${sizeMb.toFixed(2)} MB（建议 <= ${SOFT_LIMIT_MB} MB，硬上限 ${HARD_LIMIT_MB} MB）`);
+console.log(`   - 压缩包体积：${sizeMb.toFixed(2)} MB（目标远小于 ${SOFT_LIMIT_MB} MB，硬上限 ${HARD_LIMIT_MB} MB）`);
 
 if (sizeMb > HARD_LIMIT_MB) {
-  console.error(`❌ 体积超过门户硬上限（${HARD_LIMIT_MB} MB），请优化贴图/音频资源后再上传！`);
+  console.error(`❌ 体积超过硬上限（${HARD_LIMIT_MB} MB）！`);
   process.exit(1);
 }
-if (sizeMb > SOFT_LIMIT_MB) {
-  console.warn(`⚠️ 提示：体积超过建议首包阈值 ${SOFT_LIMIT_MB} MB，建议精简资源以提升 Poki 首屏转化率。`);
+if (sizeMb >= SOFT_LIMIT_MB) {
+  console.warn(`⚠️ 体积接近或超过 ${SOFT_LIMIT_MB} MB 弱网秒开红线！`);
 }

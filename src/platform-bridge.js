@@ -1,11 +1,19 @@
 /**
- * 统一商业化、门户生命周期、GA4 埋点与新加坡 Supabase 排行榜/云存档桥接层
+ * 零成本全球多平台统一商业化 SDK、GA4 埋点与新加坡 Supabase 云存档/榜单桥接层
  *
- * 参考规范：
- * - defold/template-html5-poki 与 Poki SDK v2 官方生命周期/广告静音规范
- * - CrazyGames HTML5 SDK v2/v3 官方广告与环境探测规范
- * - Telegram Mini App (WebApp) 容器适配
- * - 新加坡 Supabase（兼容新版 sb_publishable_ 可发布密钥与防刷分 RPC）
+ * 兼容平台：
+ * - Playgama Bridge (window.bridge)
+ * - CrazyGames HTML5 SDK v2/v3 (window.CrazyGames.SDK)
+ * - GameMonetize SDK (window.sdk)
+ * - GamePix SDK (window.GamePix)
+ * - Telegram Mini App (window.Telegram.WebApp) + AdsGram 激励广告 (window.Adsgram)
+ * - Poki SDK v2 (window.PokiSDK)
+ * - GitHub Pages / Cloudflare Pages / itch.io 独立站模式
+ *
+ * 3 个核心高价值激励广告触发点：
+ * 1) revive_taiyi   — 濒死「太乙真火」清两行复活
+ * 2) reroll_decree  — 肉鸽「元始敕令」三选一重抽
+ * 3) double_essence — 结算玄铁精魄翻倍
  */
 
 import { getRuntimeConfig } from './config.js';
@@ -14,7 +22,7 @@ const STORAGE_KEYS = {
   playerId: 'gf_player_id_v1',
   playerSecret: 'gf_player_secret_v1',
   nickname: 'gf_player_nickname_v1',
-  save: 'gf_local_save_v1',
+  save: 'irf_local_save_v1',
   retention: 'gf_retention_meta_v1'
 };
 
@@ -88,7 +96,7 @@ export class PlatformBridge {
     }
     const existing = safeStorageGet(STORAGE_KEYS.nickname);
     if (existing) return existing;
-    const name = `Walker_${this.playerId.slice(-4).toUpperCase()}`;
+    const name = `Forge_${this.playerId.slice(-4).toUpperCase()}`;
     safeStorageSet(STORAGE_KEYS.nickname, name);
     return name;
   }
@@ -121,26 +129,23 @@ export class PlatformBridge {
   }
 
   /**
-   * 自动探测当前运行渠道：poki / crazygames / telegram / standalone
+   * 自动探测当前运行平台：
+   * playgama / poki / crazygames / gamemonetize / gamepix / telegram / standalone
    */
   detectPlatform() {
     if (typeof window === 'undefined') return 'standalone';
     if (this.config.portalTarget && this.config.portalTarget !== 'auto') {
       return this.config.portalTarget;
     }
+    if (window.bridge?.advertisement || window.bridge?.platform) return 'playgama';
     if (window.PokiSDK) return 'poki';
-    if (window.CrazyGames?.SDK && window.CrazyGames.SDK.environment !== 'disabled') {
-      return 'crazygames';
-    }
-    if (window.Telegram?.WebApp && window.Telegram.WebApp.initData) {
-      return 'telegram';
-    }
+    if (window.CrazyGames?.SDK && window.CrazyGames.SDK.environment !== 'disabled') return 'crazygames';
+    if (window.sdk?.showBanner) return 'gamemonetize';
+    if (window.GamePix) return 'gamepix';
+    if (window.Telegram?.WebApp && (window.Telegram.WebApp.initData || window.Adsgram)) return 'telegram';
     return 'standalone';
   }
 
-  /**
-   * 注册广告播放时的静音/暂停与恢复回调（Poki & CrazyGames 审核强制要求）
-   */
   setAudioPauseHandlers({ onPause, onResume }) {
     this.pauseHandlers = {
       onPause: typeof onPause === 'function' ? onPause : () => {},
@@ -148,9 +153,6 @@ export class PlatformBridge {
     };
   }
 
-  /**
-   * 按需动态注入 GA4 gtag.js（仅当配置了衡量 ID 且非离线沙箱）
-   */
   _initGA4() {
     const mid = this.config.ga4MeasurementId;
     if (!mid || typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -173,16 +175,15 @@ export class PlatformBridge {
     document.head.appendChild(script);
   }
 
-  /**
-   * 统一初始化入口：门户 SDK + GA4 + 留存上报
-   */
   async init() {
     if (this.initialized) return { platform: this.platform };
     this.platform = this.detectPlatform();
     this._initGA4();
 
     try {
-      if (this.platform === 'poki' && window.PokiSDK?.init) {
+      if (this.platform === 'playgama' && window.bridge?.initialize) {
+        await window.bridge.initialize().catch(() => {});
+      } else if (this.platform === 'poki' && window.PokiSDK?.init) {
         await window.PokiSDK.init().catch(() => {});
       } else if (this.platform === 'crazygames' && window.CrazyGames?.SDK?.init) {
         await window.CrazyGames.SDK.init().catch(() => {});
@@ -190,9 +191,7 @@ export class PlatformBridge {
         window.Telegram.WebApp.ready?.();
         window.Telegram.WebApp.expand?.();
       }
-    } catch (_) {
-      // 广告拦截器或离线环境不阻塞游戏启动
-    }
+    } catch (_) {}
 
     this.initialized = true;
     this.trackEvent('game_boot', {
@@ -207,28 +206,28 @@ export class PlatformBridge {
     return { platform: this.platform };
   }
 
-  /**
-   * 首屏资源加载完成（Poki / CrazyGames 转化率统计必需）
-   */
   loadingFinished() {
     try {
-      if (this.platform === 'poki') {
+      if (this.platform === 'playgama') {
+        window.bridge?.platform?.sendMessage?.('game_ready');
+      } else if (this.platform === 'poki') {
         window.PokiSDK?.gameLoadingFinished?.();
       } else if (this.platform === 'crazygames') {
         window.CrazyGames?.SDK?.game?.loadingStop?.();
+      } else if (this.platform === 'gamepix') {
+        window.GamePix?.loaded?.();
       }
     } catch (_) {}
     this.trackEvent('game_ready', {});
   }
 
-  /**
-   * 进入可交互局内玩法（防重复触发状态机）
-   */
   gameplayStart(meta = {}) {
     if (!this.isGameplayActive) {
       this.isGameplayActive = true;
       try {
-        if (this.platform === 'poki') {
+        if (this.platform === 'playgama') {
+          window.bridge?.platform?.sendMessage?.('gameplay_started');
+        } else if (this.platform === 'poki') {
           window.PokiSDK?.gameplayStart?.();
         } else if (this.platform === 'crazygames') {
           window.CrazyGames?.SDK?.game?.gameplayStart?.();
@@ -239,14 +238,13 @@ export class PlatformBridge {
     this.trackEvent('level_start', meta);
   }
 
-  /**
-   * 局内玩法暂停/结算/返回菜单
-   */
   gameplayStop() {
     if (!this.isGameplayActive) return;
     this.isGameplayActive = false;
     try {
-      if (this.platform === 'poki') {
+      if (this.platform === 'playgama') {
+        window.bridge?.platform?.sendMessage?.('gameplay_stopped');
+      } else if (this.platform === 'poki') {
         window.PokiSDK?.gameplayStop?.();
       } else if (this.platform === 'crazygames') {
         window.CrazyGames?.SDK?.game?.gameplayStop?.();
@@ -254,19 +252,18 @@ export class PlatformBridge {
     } catch (_) {}
   }
 
-  /**
-   * 通关/破纪录高光时刻（触发 CrazyGames happytime）
-   */
   happyTime() {
     try {
       if (this.platform === 'crazygames') {
         window.CrazyGames?.SDK?.game?.happytime?.();
+      } else if (this.platform === 'gamepix') {
+        window.GamePix?.happyMoment?.();
       }
     } catch (_) {}
   }
 
   /**
-   * 触发插屏广告（自然停顿点：重开/下一关前调用），自动处理静音与暂停
+   * 自然停顿插屏广告（Playgama / Poki / CrazyGames / GameMonetize / GamePix）
    */
   async showCommercialBreak(placement = 'interstitial') {
     this.gameplayStop();
@@ -279,7 +276,9 @@ export class PlatformBridge {
 
     this.pauseHandlers.onPause('commercial');
     try {
-      if (this.platform === 'poki' && window.PokiSDK?.commercialBreak) {
+      if (this.platform === 'playgama' && window.bridge?.advertisement?.showInterstitial) {
+        await window.bridge.advertisement.showInterstitial();
+      } else if (this.platform === 'poki' && window.PokiSDK?.commercialBreak) {
         await window.PokiSDK.commercialBreak();
       } else if (this.platform === 'crazygames' && window.CrazyGames?.SDK?.ad?.requestAd) {
         await new Promise((resolve) => {
@@ -289,6 +288,10 @@ export class PlatformBridge {
             adError: () => resolve()
           });
         });
+      } else if (this.platform === 'gamemonetize' && window.sdk?.showBanner) {
+        await Promise.resolve(window.sdk.showBanner());
+      } else if (this.platform === 'gamepix' && window.GamePix?.interstitialAd) {
+        await window.GamePix.interstitialAd();
       }
       this.trackEvent('ad_commercial_complete', { placement });
       return { shown: true, reason: 'completed' };
@@ -300,10 +303,10 @@ export class PlatformBridge {
   }
 
   /**
-   * 触发激励视频广告（复活 / 双倍积分），严格校验发奖结果并自动静音暂停
-   * @returns {Promise<{ granted: boolean, reason: string }>}
+   * 统一激励视频广告（兼容 Playgama / Poki / CrazyGames / GameMonetize / GamePix / Telegram AdsGram）
+   * @param {'revive_taiyi'|'reroll_decree'|'double_essence'|string} rewardType
    */
-  async showRewardedBreak(rewardType = 'revive') {
+  async showRewardedBreak(rewardType = 'revive_taiyi') {
     this.gameplayStop();
     this.trackEvent('ad_rewarded_request', { reward_type: rewardType });
 
@@ -312,7 +315,26 @@ export class PlatformBridge {
       let granted = false;
       let reason = 'completed';
 
-      if (this.platform === 'poki' && window.PokiSDK?.rewardedBreak) {
+      if (this.platform === 'playgama' && window.bridge?.advertisement?.showRewarded) {
+        granted = await new Promise((resolve) => {
+          let settled = false;
+          const done = (ok) => {
+            if (!settled) { settled = true; resolve(ok); }
+          };
+          try {
+            window.bridge.advertisement.on?.('rewarded_state_changed', (state) => {
+              if (state === 'rewarded') done(true);
+              if (state === 'closed' || state === 'failed') done(false);
+            });
+            Promise.resolve(window.bridge.advertisement.showRewarded()).then(() => {
+              setTimeout(() => done(true), 200);
+            }).catch(() => done(false));
+          } catch (_) {
+            done(false);
+          }
+        });
+        reason = granted ? 'playgama_granted' : 'playgama_denied';
+      } else if (this.platform === 'poki' && window.PokiSDK?.rewardedBreak) {
         granted = Boolean(await window.PokiSDK.rewardedBreak());
         reason = granted ? 'poki_granted' : 'poki_skipped';
       } else if (this.platform === 'crazygames' && window.CrazyGames?.SDK?.ad?.requestAd) {
@@ -324,9 +346,29 @@ export class PlatformBridge {
           });
         });
         reason = granted ? 'crazygames_granted' : 'crazygames_error';
+      } else if (this.platform === 'gamemonetize' && window.sdk?.showBanner) {
+        await Promise.resolve(window.sdk.showBanner());
+        granted = true;
+        reason = 'gamemonetize_granted';
+      } else if (this.platform === 'gamepix' && window.GamePix?.rewardAd) {
+        const res = await window.GamePix.rewardAd();
+        granted = Boolean(res?.success !== false);
+        reason = granted ? 'gamepix_granted' : 'gamepix_denied';
+      } else if (this.platform === 'telegram' && window.Adsgram?.init) {
+        const blockId = this.config.adsgramBlockId || '';
+        if (blockId) {
+          const adController = window.Adsgram.init({ blockId });
+          await adController.show();
+          granted = true;
+          reason = 'adsgram_granted';
+        } else {
+          await new Promise((r) => setTimeout(r, 300));
+          granted = true;
+          reason = 'telegram_demo';
+        }
       } else {
-        // 独立站 / GitHub Pages / Telegram 演示模式：短暂模拟激励回调以便完整验收业务闭环
-        await new Promise((r) => setTimeout(r, 350));
+        // 独立站 / GitHub Pages 演示模式：模拟短暂激励回调以便验收全链路闭环
+        await new Promise((r) => setTimeout(r, 280));
         granted = true;
         reason = 'standalone_demo';
       }
@@ -346,9 +388,6 @@ export class PlatformBridge {
     }
   }
 
-  /**
-   * GA4 统一事件上报（启动、开局、通关/失败、广告触发、留存）
-   */
   trackEvent(eventName, params = {}) {
     const payload = {
       game_id: this.config.gameId,
@@ -367,9 +406,6 @@ export class PlatformBridge {
     } catch (_) {}
   }
 
-  /**
-   * 构造新加坡 Supabase 请求头（严格兼容新版 sb_publishable_ 密钥）
-   */
   buildSupabaseHeaders(extra = {}) {
     const key = this.config.supabaseKey;
     const headers = {
@@ -378,7 +414,6 @@ export class PlatformBridge {
       'x-gf-player-secret': this.playerSecret,
       ...extra
     };
-    // 新版 sb_publishable_ 不是 JWT，严禁放入 Authorization: Bearer
     if (isLegacyJwtKey(key)) {
       headers.Authorization = `Bearer ${key}`;
     }
@@ -391,7 +426,7 @@ export class PlatformBridge {
 
   async _supabaseFetch(path, options = {}) {
     if (!this.isSupabaseReady()) {
-      throw new Error('未配置新加坡 Supabase 连接信息');
+      throw new Error('Supabase configuration missing');
     }
     const headers = this.buildSupabaseHeaders(options.headers || {});
     if (options.body !== undefined && !headers['Content-Type']) {
@@ -421,32 +456,33 @@ export class PlatformBridge {
   }
 
   /**
-   * 读取玩家本地与云端存档（合并取最优进度与已解锁皮肤并集，绝不回退）
+   * 读取玩家本地与云端存档（玄铁精魄 coins、4 尊战将解锁与装备状态、最高波次与战功）
    */
   getLocalSave() {
     const def = {
-      maxLevel: 1,
+      maxLevel: 1, // 对应最高波次 bestWave
       bestScore: 0,
-      coins: 0,
+      coins: 0, // 对应玄铁精魄 Iron Essence
       soundEnabled: true,
       nickname: this.nickname,
-      unlockedTrails: ['crimson_flame'],
-      selectedTrail: 'crimson_flame'
+      unlockedWarlords: ['nezha'],
+      selectedWarlord: 'nezha'
     };
     try {
       const parsed = JSON.parse(safeStorageGet(STORAGE_KEYS.save) || 'null');
       if (!parsed) return def;
-      const trails = Array.isArray(parsed.unlockedTrails)
-        ? Array.from(new Set(['crimson_flame', ...parsed.unlockedTrails]))
-        : ['crimson_flame'];
-      const selected = trails.includes(parsed.selectedTrail) ? parsed.selectedTrail : 'crimson_flame';
+      const warlords = Array.isArray(parsed.unlockedWarlords)
+        ? Array.from(new Set(['nezha', ...parsed.unlockedWarlords]))
+        : ['nezha'];
+      const selected = warlords.includes(parsed.selectedWarlord) ? parsed.selectedWarlord : 'nezha';
       return {
         ...def,
         ...parsed,
+        maxLevel: Math.max(1, Number(parsed.maxLevel || 1)),
         coins: Math.max(0, Number(parsed.coins || 0)),
         bestScore: Math.max(0, Number(parsed.bestScore || 0)),
-        unlockedTrails: trails,
-        selectedTrail: selected
+        unlockedWarlords: warlords,
+        selectedWarlord: selected
       };
     } catch (_) {
       return def;
@@ -458,11 +494,12 @@ export class PlatformBridge {
     const merged = { ...prev, ...data };
     merged.coins = Math.max(0, Math.round(Number(merged.coins || 0)));
     merged.bestScore = Math.max(0, Math.round(Number(merged.bestScore || 0)));
-    const nextTrails = Array.isArray(merged.unlockedTrails)
-      ? Array.from(new Set(['crimson_flame', ...merged.unlockedTrails]))
-      : prev.unlockedTrails;
-    merged.unlockedTrails = nextTrails;
-    merged.selectedTrail = nextTrails.includes(merged.selectedTrail) ? merged.selectedTrail : 'crimson_flame';
+    merged.maxLevel = Math.max(1, Math.round(Number(merged.maxLevel || 1)));
+    const nextWarlords = Array.isArray(merged.unlockedWarlords)
+      ? Array.from(new Set(['nezha', ...merged.unlockedWarlords]))
+      : prev.unlockedWarlords;
+    merged.unlockedWarlords = nextWarlords;
+    merged.selectedWarlord = nextWarlords.includes(merged.selectedWarlord) ? merged.selectedWarlord : 'nezha';
     safeStorageSet(STORAGE_KEYS.save, JSON.stringify(merged));
     return merged;
   }
@@ -477,22 +514,21 @@ export class PlatformBridge {
       if (Array.isArray(rows) && rows.length > 0) {
         const cloud = rows[0];
         const cloudData = (cloud.save_data && typeof cloud.save_data === 'object') ? cloud.save_data : {};
-        const cloudTrails = Array.isArray(cloudData.unlockedTrails) ? cloudData.unlockedTrails : [];
-        const mergedTrails = Array.from(new Set(['crimson_flame', ...local.unlockedTrails, ...cloudTrails]));
-        const selectedTrail = mergedTrails.includes(local.selectedTrail)
-          ? local.selectedTrail
-          : (mergedTrails.includes(cloudData.selectedTrail) ? cloudData.selectedTrail : 'crimson_flame');
+        const cloudWarlords = Array.isArray(cloudData.unlockedWarlords) ? cloudData.unlockedWarlords : [];
+        const mergedWarlords = Array.from(new Set(['nezha', ...local.unlockedWarlords, ...cloudWarlords]));
+        const selectedWarlord = mergedWarlords.includes(local.selectedWarlord)
+          ? local.selectedWarlord
+          : (mergedWarlords.includes(cloudData.selectedWarlord) ? cloudData.selectedWarlord : 'nezha');
 
-        const merged = this.saveLocal({
+        return this.saveLocal({
           maxLevel: Math.max(local.maxLevel, Number(cloud.max_level || 1)),
           bestScore: Math.max(local.bestScore, Number(cloud.best_score || 0)),
           coins: Math.max(local.coins, Number(cloud.coins || 0)),
           soundEnabled: cloud.sound_enabled !== undefined ? Boolean(cloud.sound_enabled) : local.soundEnabled,
           nickname: cloud.nickname || local.nickname,
-          unlockedTrails: mergedTrails,
-          selectedTrail
+          unlockedWarlords: mergedWarlords,
+          selectedWarlord
         });
-        return merged;
       }
     } catch (_) {}
     return local;
@@ -514,8 +550,8 @@ export class PlatformBridge {
           p_save_data: {
             version: this.config.gameVersion,
             platform: this.platform,
-            unlockedTrails: merged.unlockedTrails,
-            selectedTrail: merged.selectedTrail
+            unlockedWarlords: merged.unlockedWarlords,
+            selectedWarlord: merged.selectedWarlord
           }
         }
       });
@@ -525,17 +561,17 @@ export class PlatformBridge {
     }
   }
 
-  /**
-   * 提交成绩至新加坡 Supabase 全球排行榜（经由数据库端防刷分 RPC 校验）
-   */
   async submitScore({ score, levelReached, durationSec, revived = false, doubleClaimed = false }) {
     const safeScore = Math.max(0, Math.round(Number(score) || 0));
     const safeDuration = Math.max(1, Math.round(Number(durationSec) || 1));
     const safeLevel = Math.max(1, Math.round(Number(levelReached) || 1));
 
     const save = this.getLocalSave();
-    if (safeScore > save.bestScore) {
-      this.saveLocal({ bestScore: safeScore });
+    if (safeScore > save.bestScore || safeLevel > save.maxLevel) {
+      this.saveLocal({
+        bestScore: Math.max(save.bestScore, safeScore),
+        maxLevel: Math.max(save.maxLevel, safeLevel)
+      });
     }
 
     if (!this.isSupabaseReady()) {
@@ -562,9 +598,6 @@ export class PlatformBridge {
     }
   }
 
-  /**
-   * 拉取全球排行榜 TOP 榜单（已由视图过滤异常作弊成绩）
-   */
   async fetchLeaderboard(limit = 10) {
     if (!this.isSupabaseReady()) {
       const local = this.getLocalSave();

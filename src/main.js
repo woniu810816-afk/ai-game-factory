@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_DESIGN } from './config.js';
+import { i18n } from './i18n.js';
 import { platformBridge } from './platform-bridge.js';
 import { synthAudio } from './audio/synth-sfx.js';
 import { BootScene } from './scenes/BootScene.js';
@@ -7,7 +8,7 @@ import { MenuScene } from './scenes/MenuScene.js';
 import { GameScene } from './scenes/GameScene.js';
 import { ResultScene } from './scenes/ResultScene.js';
 
-// 符合 Poki / CrazyGames 审核规范：阻止空格键、方向键和滚轮触发宿主页面滚动
+// 符合全球各 H5 门户审核规范：阻止空格键、方向键和滚轮触发宿主页面滚动
 window.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
 window.addEventListener('keydown', (e) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', ' '].includes(e.key)) {
@@ -20,20 +21,27 @@ document.addEventListener('touchmove', (e) => {
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
 
-// 暴露轻量只读运行态快照，便于移动端验收测试与排障（绝不含任何密钥）
+// 暴露轻量只读运行态快照，便于 iPhone 竖屏触摸拖拽验收测试与排障（绝不含任何密钥）
 window.__GAME_STATE__ = {
   scene: 'BootScene',
+  lang: i18n.lang,
   score: 0,
-  runJade: 0,
-  jadeBalance: 0,
-  combo: 0,
-  feverActive: false,
-  nearMissCount: 0,
-  playerX: GAME_DESIGN.width / 2,
-  selectedTrail: 'crimson_flame',
-  unlockedTrails: ['crimson_flame'],
+  wave: 1,
+  gateHp: 100,
+  gateMaxHp: 100,
+  essenceBalance: 0,
+  runEssence: 0,
+  selectedWarlord: 'nezha',
+  unlockedWarlords: ['nezha'],
   soundEnabled: true,
   leaderboardOpen: false,
+  linesCleared: 0,
+  piecesPlaced: 0,
+  occupiedCells: 0,
+  dragging: false,
+  dragLiftY: GAME_DESIGN.board.dragLiftY,
+  board: [],
+  tray: [],
   revived: false
 };
 
@@ -42,7 +50,7 @@ const gameConfig = {
   parent: 'app',
   width: GAME_DESIGN.width,
   height: GAME_DESIGN.height,
-  backgroundColor: '#090714',
+  backgroundColor: '#0b0a10',
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
@@ -54,13 +62,6 @@ const gameConfig = {
     activePointers: 3,
     touch: {
       capture: true
-    }
-  },
-  physics: {
-    default: 'arcade',
-    arcade: {
-      gravity: { x: 0, y: 0 },
-      debug: false
     }
   },
   scene: [BootScene, MenuScene, GameScene, ResultScene]
@@ -99,7 +100,7 @@ window.addEventListener('pointerdown', () => {
   } catch (_) {}
 }, { capture: true, passive: true });
 
-// 广告期间自动静音并暂停游戏主循环，广告结束立即恢复（Poki / CrazyGames 必检项）
+// 广告期间自动静音并暂停游戏主循环，广告结束立即恢复
 platformBridge.setAudioPauseHandlers({
   onPause: () => {
     synthAudio.setAdMuted(true);
