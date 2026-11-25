@@ -88,7 +88,7 @@ export class PlatformBridge {
     }
     const existing = safeStorageGet(STORAGE_KEYS.nickname);
     if (existing) return existing;
-    const name = `飞行员${this.playerId.slice(-4).toUpperCase()}`;
+    const name = `Walker_${this.playerId.slice(-4).toUpperCase()}`;
     safeStorageSet(STORAGE_KEYS.nickname, name);
     return name;
   }
@@ -235,6 +235,7 @@ export class PlatformBridge {
         }
       } catch (_) {}
     }
+    this.trackEvent('game_start', meta);
     this.trackEvent('level_start', meta);
   }
 
@@ -420,7 +421,7 @@ export class PlatformBridge {
   }
 
   /**
-   * 读取玩家本地与云端存档（合并取最优进度，不回退）
+   * 读取玩家本地与云端存档（合并取最优进度与已解锁皮肤并集，绝不回退）
    */
   getLocalSave() {
     const def = {
@@ -428,18 +429,40 @@ export class PlatformBridge {
       bestScore: 0,
       coins: 0,
       soundEnabled: true,
-      nickname: this.nickname
+      nickname: this.nickname,
+      unlockedTrails: ['crimson_flame'],
+      selectedTrail: 'crimson_flame'
     };
     try {
       const parsed = JSON.parse(safeStorageGet(STORAGE_KEYS.save) || 'null');
-      return parsed ? { ...def, ...parsed } : def;
+      if (!parsed) return def;
+      const trails = Array.isArray(parsed.unlockedTrails)
+        ? Array.from(new Set(['crimson_flame', ...parsed.unlockedTrails]))
+        : ['crimson_flame'];
+      const selected = trails.includes(parsed.selectedTrail) ? parsed.selectedTrail : 'crimson_flame';
+      return {
+        ...def,
+        ...parsed,
+        coins: Math.max(0, Number(parsed.coins || 0)),
+        bestScore: Math.max(0, Number(parsed.bestScore || 0)),
+        unlockedTrails: trails,
+        selectedTrail: selected
+      };
     } catch (_) {
       return def;
     }
   }
 
   saveLocal(data) {
-    const merged = { ...this.getLocalSave(), ...data };
+    const prev = this.getLocalSave();
+    const merged = { ...prev, ...data };
+    merged.coins = Math.max(0, Math.round(Number(merged.coins || 0)));
+    merged.bestScore = Math.max(0, Math.round(Number(merged.bestScore || 0)));
+    const nextTrails = Array.isArray(merged.unlockedTrails)
+      ? Array.from(new Set(['crimson_flame', ...merged.unlockedTrails]))
+      : prev.unlockedTrails;
+    merged.unlockedTrails = nextTrails;
+    merged.selectedTrail = nextTrails.includes(merged.selectedTrail) ? merged.selectedTrail : 'crimson_flame';
     safeStorageSet(STORAGE_KEYS.save, JSON.stringify(merged));
     return merged;
   }
@@ -449,16 +472,25 @@ export class PlatformBridge {
     if (!this.isSupabaseReady()) return local;
     try {
       const rows = await this._supabaseFetch(
-        `gf_player_saves?game_id=eq.${encodeURIComponent(this.config.gameId)}&player_id=eq.${encodeURIComponent(this.playerId)}&select=max_level,best_score,coins,sound_enabled,nickname&limit=1`
+        `gf_player_saves?game_id=eq.${encodeURIComponent(this.config.gameId)}&player_id=eq.${encodeURIComponent(this.playerId)}&select=max_level,best_score,coins,sound_enabled,nickname,save_data&limit=1`
       );
       if (Array.isArray(rows) && rows.length > 0) {
         const cloud = rows[0];
+        const cloudData = (cloud.save_data && typeof cloud.save_data === 'object') ? cloud.save_data : {};
+        const cloudTrails = Array.isArray(cloudData.unlockedTrails) ? cloudData.unlockedTrails : [];
+        const mergedTrails = Array.from(new Set(['crimson_flame', ...local.unlockedTrails, ...cloudTrails]));
+        const selectedTrail = mergedTrails.includes(local.selectedTrail)
+          ? local.selectedTrail
+          : (mergedTrails.includes(cloudData.selectedTrail) ? cloudData.selectedTrail : 'crimson_flame');
+
         const merged = this.saveLocal({
           maxLevel: Math.max(local.maxLevel, Number(cloud.max_level || 1)),
           bestScore: Math.max(local.bestScore, Number(cloud.best_score || 0)),
           coins: Math.max(local.coins, Number(cloud.coins || 0)),
           soundEnabled: cloud.sound_enabled !== undefined ? Boolean(cloud.sound_enabled) : local.soundEnabled,
-          nickname: cloud.nickname || local.nickname
+          nickname: cloud.nickname || local.nickname,
+          unlockedTrails: mergedTrails,
+          selectedTrail
         });
         return merged;
       }
@@ -479,7 +511,12 @@ export class PlatformBridge {
           p_best_score: merged.bestScore,
           p_coins: merged.coins,
           p_sound_enabled: merged.soundEnabled,
-          p_save_data: { version: this.config.gameVersion, platform: this.platform }
+          p_save_data: {
+            version: this.config.gameVersion,
+            platform: this.platform,
+            unlockedTrails: merged.unlockedTrails,
+            selectedTrail: merged.selectedTrail
+          }
         }
       });
       return { synced: true, data: merged };
@@ -547,7 +584,7 @@ export class PlatformBridge {
         source: 'supabase',
         entries: (rows || []).map((row, idx) => ({
           rank: idx + 1,
-          nickname: row.nickname || '匿名玩家',
+          nickname: row.nickname || 'Guest',
           score: Number(row.best_score || 0),
           level_reached: Number(row.max_level_reached || 1),
           isSelf: row.player_id === this.playerId

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-iPhone 竖屏高分屏（390x844, deviceScaleFactor=3, has_touch=True）自动化触摸验收测试
-验证：
-1. html / body / #app / canvas 触控样式与视口居中对齐（无 Flexbox 叠加偏移）
-2. 点击「音效开」「全球排行榜」「◀」「▶」全部灵敏响应
-3. 实际点击「▶」后关卡数字变为第 2 关
-4. 实际点击「开始冲刺」后成功进入 GameScene（level=2）且无任何运行时错误
+《Celestial Rush》iPhone 竖屏高分屏（390x844, deviceScaleFactor=3, has_touch=True）自动化触摸点击与滑动验收测试
+验证项：
+1. html / body / #app / canvas 触控样式与视口 1:1 居中对齐（无 Flexbox 叠加偏移）
+2. 触摸点击右上角 SFX 静音开关正常切换
+3. 触摸点击 TRAILS 面板用 Spirit Jade 永久解锁并装备 JADE LOTUS 皮肤，验证扣除与持久化
+4. 触摸点击 GLOBAL LEADERBOARD 弹窗打开与关闭正常
+5. 触摸点击 PLAY NOW 成功进入 GameScene 且运行 0 报错
+6. 真实模拟单指按住屏幕向右滑、向左滑（CDP touchStart -> touchMove -> touchEnd），验证角色跟手左右移动
 """
 
 import http.server
+import json
 import os
 import socketserver
 import sys
@@ -34,6 +37,37 @@ def design_to_screen(rect, dx, dy):
         rect["left"] + rect["width"] * (dx / DESIGN_W),
         rect["top"] + rect["height"] * (dy / DESIGN_H),
     )
+
+
+def dispatch_touch_drag(cdp, page, rect, points_design, step_delay_ms=35):
+    """使用 CDP Input.dispatchTouchEvent 真实模拟 iPhone 单指按住连续滑动"""
+    sx0, sy0 = design_to_screen(rect, points_design[0][0], points_design[0][1])
+    cdp.send("Input.dispatchTouchEvent", {
+        "type": "touchStart",
+        "touchPoints": [{"x": round(sx0, 1), "y": round(sy0, 1), "id": 1}],
+    })
+    page.wait_for_timeout(step_delay_ms)
+
+    for i in range(len(points_design) - 1):
+        x1, y1 = points_design[i]
+        x2, y2 = points_design[i + 1]
+        steps = 8
+        for s in range(1, steps + 1):
+            t = s / steps
+            dx = x1 + (x2 - x1) * t
+            dy = y1 + (y2 - y1) * t
+            sx, sy = design_to_screen(rect, dx, dy)
+            cdp.send("Input.dispatchTouchEvent", {
+                "type": "touchMove",
+                "touchPoints": [{"x": round(sx, 1), "y": round(sy, 1), "id": 1}],
+            })
+            page.wait_for_timeout(step_delay_ms)
+
+    cdp.send("Input.dispatchTouchEvent", {
+        "type": "touchEnd",
+        "touchPoints": [],
+    })
+    page.wait_for_timeout(60)
 
 
 def main():
@@ -62,6 +96,19 @@ def main():
             page = ctx.new_page()
             page.on("pageerror", lambda e: errors.append(f"PAGEERROR: {e}"))
 
+            # 预置 120 Spirit Jade 以便端到端验证 TRAILS 皮肤解锁扣费与持久化闭环
+            seed_save = json.dumps({
+                "maxLevel": 1,
+                "bestScore": 0,
+                "coins": 120,
+                "soundEnabled": True,
+                "unlockedTrails": ["crimson_flame"],
+                "selectedTrail": "crimson_flame",
+            })
+            page.add_init_script(
+                f"if (!localStorage.getItem('gf_local_save_v1')) localStorage.setItem('gf_local_save_v1', {json.dumps(seed_save)});"
+            )
+
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
             page.wait_for_function("() => window.__GAME_STATE__ && window.__GAME_STATE__.scene === 'MenuScene'", timeout=8000)
 
@@ -74,10 +121,11 @@ def main():
               });
               const canvas = document.querySelector('canvas');
               const rect = canvas.getBoundingClientRect().toJSON();
-              return { els, rect, dpr: window.devicePixelRatio, innerW: window.innerWidth, innerH: window.innerHeight };
+              return { els, rect, dpr: window.devicePixelRatio, title: document.title };
             }""")
 
             assert dom_check["dpr"] == 3, f"期望 devicePixelRatio=3，实际 {dom_check['dpr']}"
+            assert "Celestial Rush" in dom_check["title"], f"页面标题应包含 Celestial Rush，实际 {dom_check['title']}"
             for item in dom_check["els"]:
                 assert item["touchAction"] == "none", f"{item['sel']} touch-action 必须为 none，实际 {item['touchAction']}"
                 assert item["pointerEvents"] == "auto", f"{item['sel']} pointer-events 必须为 auto，实际 {item['pointerEvents']}"
@@ -91,67 +139,65 @@ def main():
 
             state0 = page.evaluate("() => window.__GAME_STATE__")
             btns = state0["buttons"]
-            assert state0["selectedLevel"] == 1, f"初始关卡应为 1，实际 {state0['selectedLevel']}"
+            assert state0["jadeBalance"] == 120, f"预置灵玉应为 120，实际 {state0['jadeBalance']}"
 
-            # 2. 点击「音效开」按钮
+            # 2. 触摸点击右上角 SFX 静音开关
             sx, sy = design_to_screen(rect, btns["sound"]["x"], btns["sound"]["y"])
             page.touchscreen.tap(sx, sy)
-            page.wait_for_timeout(180)
-            assert page.evaluate("() => window.__GAME_STATE__.soundEnabled") is False, "点击音效按钮未切换为静音"
+            page.wait_for_timeout(160)
+            assert page.evaluate("() => window.__GAME_STATE__.soundEnabled") is False, "点击 SFX 按钮未切换为静音"
             page.touchscreen.tap(sx, sy)
-            page.wait_for_timeout(180)
-            assert page.evaluate("() => window.__GAME_STATE__.soundEnabled") is True, "再次点击音效按钮未恢复开启"
-            print("✓ 2. 触摸点击「音效开/关」按钮响应正常")
+            page.wait_for_timeout(160)
+            assert page.evaluate("() => window.__GAME_STATE__.soundEnabled") is True, "再次点击 SFX 按钮未恢复开启"
+            print("✓ 2. 触摸点击右上角 SFX ON/OFF 静音开关正常")
 
-            # 3. 点击「全球排行榜」并关闭
+            # 3. 触摸点击 TRAILS 面板解锁并装备 JADE LOTUS（40 Jade）
+            jx, jy = design_to_screen(rect, btns["trails"]["jade_lotus"]["x"], btns["trails"]["jade_lotus"]["y"])
+            page.touchscreen.tap(jx, jy)
+            page.wait_for_timeout(200)
+            state_trail = page.evaluate("() => window.__GAME_STATE__")
+            assert state_trail["selectedTrail"] == "jade_lotus", f"点击 JADE LOTUS 后应装备，实际 {state_trail['selectedTrail']}"
+            assert "jade_lotus" in state_trail["unlockedTrails"], "JADE LOTUS 应写入已解锁皮肤列表"
+            assert state_trail["jadeBalance"] == 80, f"解锁 40 Jade 皮肤后余额应为 80，实际 {state_trail['jadeBalance']}"
+            print("✓ 3. 触摸点击 TRAILS 面板成功解锁并装备 JADE LOTUS（余额 120 -> 80）")
+
+            # 4. 触摸点击 GLOBAL LEADERBOARD 打开并关闭
             lx, ly = design_to_screen(rect, btns["leaderboard"]["x"], btns["leaderboard"]["y"])
             page.touchscreen.tap(lx, ly)
-            page.wait_for_timeout(250)
-            assert page.evaluate("() => window.__GAME_STATE__.leaderboardOpen") is True, "点击全球排行榜未打开弹窗"
+            page.wait_for_timeout(240)
+            assert page.evaluate("() => window.__GAME_STATE__.leaderboardOpen") is True, "点击排行榜未打开弹窗"
             cx, cy = design_to_screen(rect, 270, 480 + 258)
             page.touchscreen.tap(cx, cy)
-            page.wait_for_timeout(200)
-            assert page.evaluate("() => window.__GAME_STATE__.leaderboardOpen") is False, "点击关闭排行榜未生效"
-            print("✓ 3. 触摸点击「全球排行榜」打开与关闭正常")
-
-            # 4. 点击「▶」切换至第 2 关，并测试「◀」回退再切回第 2 关
-            nx, ny = design_to_screen(rect, btns["nextLevel"]["x"], btns["nextLevel"]["y"])
-            px, py = design_to_screen(rect, btns["prevLevel"]["x"], btns["prevLevel"]["y"])
-            page.touchscreen.tap(nx, ny)
             page.wait_for_timeout(180)
-            lvl_after_next = page.evaluate("() => window.__GAME_STATE__.selectedLevel")
-            assert lvl_after_next == 2, f"点击 ▶ 后期望变为第 2 关，实际为第 {lvl_after_next} 关"
-            page.touchscreen.tap(px, py)
-            page.wait_for_timeout(150)
-            assert page.evaluate("() => window.__GAME_STATE__.selectedLevel") == 1, "点击 ◀ 应切回第 1 关"
-            page.touchscreen.tap(nx, ny)
-            page.wait_for_timeout(150)
-            assert page.evaluate("() => window.__GAME_STATE__.selectedLevel") == 2, "再次点击 ▶ 应变为第 2 关"
-            print("✓ 4. 触摸点击「▶」「◀」成功将关卡切换为第 2 关")
+            assert page.evaluate("() => window.__GAME_STATE__.leaderboardOpen") is False, "点击 CLOSE 未关闭排行榜"
+            print("✓ 4. 触摸点击 GLOBAL LEADERBOARD 打开与关闭正常")
 
-            # 5. 点击「🚀 开始冲刺」进入 GameScene（第 2 关）并持续运行无报错
+            # 5. 触摸点击 PLAY NOW 进入 GameScene
             bx, by = design_to_screen(rect, btns["start"]["x"], btns["start"]["y"])
             page.touchscreen.tap(bx, by)
             page.wait_for_function("() => window.__GAME_STATE__.scene === 'GameScene'", timeout=5000)
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(260)
+            print("✓ 5. 触摸点击 PLAY NOW 成功进入 Celestial Rush 局内场景")
 
-            game_state = page.evaluate("() => window.__GAME_STATE__")
-            assert game_state["scene"] == "GameScene", f"期望进入 GameScene，实际 {game_state['scene']}"
-            assert game_state["level"] == 2, f"期望进入第 2 关，实际第 {game_state['level']} 关"
+            # 6. 真实模拟单指按住向右滑 -> 向左滑，验证角色严格跟手移动
+            cdp = ctx.new_cdp_session(page)
+            dispatch_touch_drag(cdp, page, rect, [(270, 740), (465, 740)], step_delay_ms=28)
+            x_right = page.evaluate("() => window.__GAME_STATE__.playerX")
+            assert x_right > 360, f"单指向右滑动后角色应显著右移 (>360)，实际 playerX={x_right}"
 
-            # 模拟局内手指触摸左右点击操控
-            tx, ty = design_to_screen(rect, 420, 760)
-            page.touchscreen.tap(tx, ty)
-            page.wait_for_timeout(300)
+            dispatch_touch_drag(cdp, page, rect, [(465, 740), (85, 740)], step_delay_ms=28)
+            x_left = page.evaluate("() => window.__GAME_STATE__.playerX")
+            assert x_left < 185, f"单指向左滑动后角色应显著左移 (<185)，实际 playerX={x_left}"
 
+            page.wait_for_timeout(450)
             assert len(errors) == 0, f"运行期间捕获到未处理异常：{errors}"
-            print("✓ 5. 触摸点击「开始冲刺」成功进入第 2 关游戏运行场景，且 0 报错！")
+            print(f"✓ 6. 手机单指按住左右跟手滑动验证通过（右滑 X={x_right}px -> 左滑 X={x_left}px，0 报错）")
 
             browser.close()
     finally:
         httpd.shutdown()
 
-    print("\n🎉 iPhone 竖屏（390x844, DPR=3）自动化手机触摸验收全部通过！")
+    print("\n🎉 《Celestial Rush》iPhone 竖屏（390x844, DPR=3）触摸点击与滑动全链路验收通过！")
 
 
 if __name__ == "__main__":

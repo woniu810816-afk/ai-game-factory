@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#070b1a" />
-  <title>星际冲刺 Star Dash - HTML5 休闲游戏母版</title>
+  <meta name="theme-color" content="#090714" />
+  <title>Celestial Rush - Arcade Mythic Runner</title>
   <style>
     * {
       box-sizing: border-box;
@@ -26,12 +26,12 @@
       overflow: hidden;
       overscroll-behavior: none;
       overscroll-behavior-y: none;
-      background: radial-gradient(circle at 50% 25%, #111c3d 0%, #070b1a 75%);
-      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at 50% 22%, #1d1033 0%, #090714 75%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       touch-action: none;
       pointer-events: auto;
     }
-    /* 使用 block 布局交由 Phaser ScaleManager 统一计算居中与缩放，避免 Flexbox 叠加 margin 造成 iOS 触控坐标偏移 */
+    /* 严格保留 block 布局交由 Phaser ScaleManager 统一居中缩放，杜绝 Flexbox 叠加导致 iOS Retina 触控坐标偏移 */
     #app {
       position: fixed;
       inset: 0;
@@ -47,7 +47,7 @@
       display: block;
       touch-action: none;
       pointer-events: auto;
-      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.65);
     }
   </style>
   <!-- 门户 SDK 占位标记：由打包脚本 scripts/package-portal.mjs 按目标渠道按需注入，避免跨渠道冗余外链 -->

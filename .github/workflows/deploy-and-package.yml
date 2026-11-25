@@ -47,7 +47,7 @@ jobs:
 
       - name: 执行生产构建（注入公开运行配置）
         env:
-          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'star-dash-v1' }}
+          VITE_GAME_ID: ${{ vars.VITE_GAME_ID || 'celestial-rush-v1' }}
           VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID || secrets.GA4_MEASUREMENT_ID }}
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}

@@ -1,8 +1,10 @@
-# 🎮 Game Factory — 标准化 HTML5 休闲游戏母版（100% Serverless）
+# 🎮 Celestial Rush — 面向欧美市场的东方玄幻休闲街机游戏（100% Serverless）
 
-本项目是一套**零独立服务器（Serverless）**的 HTML5 休闲小游戏工业化生产母版，基于最新稳定版 **Phaser.js + Vite** 构建，内置 Poki / CrazyGames / Telegram Mini App / itch.io 多渠道商业化桥接、Google Analytics 4 (GA4) 埋点体系、新加坡 Supabase 防刷分全球排行榜与玩家云存档，以及全自动 GitHub Actions 流水线。
-
-> **架构红线**：100% 采用「GitHub Pages / Cloudflare Pages + GitHub Actions + 新加坡 Supabase + GA4」无服务器方案，零 VPS 运维成本。
+本项目基于标准化 HTML5 休闲游戏母版（**Phaser 4 + Vite**）升级为首款面向欧美 Poki / CrazyGames 市场的高留存东方玄幻休闲街机游戏 **《Celestial Rush》**：
+- **零外部版权素材程序化美术**：全封闭古风战盔行者、双旋转风火轮、青铜雷纹阵、陨星、发光金玉（Spirit Jade）、护体金钟（Shield）与吸宝灵符（Magnet）；
+- **实时 Web Audio 古风音效**：五声音阶古风拨弦（随连击升调）与低频战鼓动态节奏；
+- **核心爽感与商业化留存闭环**：单指跟手滑动、Near-Miss 擦身加分、10 连击 5 秒无敌 FEVER 撞碎（微震+顿帧）、4 款 TRAILS 流光拖尾皮肤灵玉解锁、`REVIVE (AD)` 原地复活与 `2X JADE (AD)` 双倍灵玉激励广告闭环；
+- **100% Serverless 架构**：GitHub Pages / Cloudflare Pages + GitHub Actions + 新加坡 Supabase 防刷分排行榜/云存档 + GA4 核心事件上报，零独立服务器运维成本。
 
 ---
 
@@ -20,16 +22,18 @@ game-factory/
 │   ├── package-portal.mjs       # 打包符合 Poki / CrazyGames 体积规范的 dist-portal.zip
 │   └── daily-patrol.mjs         # 零依赖 GA4 日报拉取 + Supabase 反作弊清理与保活脚本
 ├── src/
-│   ├── config.js                # 环境变量与运行时配置读取（零硬编码密钥）
+│   ├── config.js                # 运行时配置与 4 款 TRAILS 流光拖尾皮肤定义（零硬编码密钥）
 │   ├── platform-bridge.js       # 统一商业化（Poki/CrazyGames/Telegram）+ GA4 + Supabase 桥接层
-│   ├── audio/synth-sfx.js       # 零外部资源的 Web Audio 合成音效引擎（自动联动广告静音）
+│   ├── audio/synth-sfx.js       # Web Audio 五声音阶古风拨弦 + 动态低频战鼓实时合成引擎
 │   ├── scenes/
-│   │   ├── BootScene.js         # 启动、程序化矢量纹理生成、SDK 初始化与云存档拉取
-│   │   ├── MenuScene.js         # 开始菜单、关卡选择、音效开关、全球排行榜弹窗
-│   │   ├── GameScene.js         # 2D 竖屏休闲玩法《星际冲刺》（触控拖动 + 键盘双端操控）
-│   │   └── ResultScene.js       # 结算界面（激励广告复活/双倍积分 + 插屏广告停顿点）
-│   └── main.js                  # Phaser 入口、竖屏自适应与广告暂停/静音联动
-└── tests/game-factory.test.mjs  # 零依赖 Node.js 自动化单元测试
+│   │   ├── BootScene.js         # 启动、程序化东方玄幻矢量纹理生成、SDK 初始化与云存档拉取
+│   │   ├── MenuScene.js         # 全英文主界面、TRAILS 流光皮肤面板、静音开关与全球排行榜
+│   │   ├── GameScene.js         # 《Celestial Rush》核心玩法（跟手滑动、Near-Miss、10连击 FEVER）
+│   │   └── ResultScene.js       # 结算界面（REVIVE (AD) 原地复活、2X JADE (AD) 双倍灵玉、全球榜）
+│   └── main.js                  # Phaser 4 入口、iPhone Retina 1:1 坐标同步与广告暂停/静音联动
+└── tests/
+    ├── game-factory.test.mjs    # 自动化单元测试、安全红线扫描与移动端 E2E 联动入口
+    └── mobile-touch.e2e.py      # iPhone 竖屏（390x844, DPR=3）触摸点击与单指滑动验收测试
 ```
 
 ---

@@ -1,12 +1,15 @@
 import Phaser from 'phaser';
-import { GAME_DESIGN } from '../config.js';
+import { GAME_DESIGN, getTrailSkin } from '../config.js';
 import { platformBridge } from '../platform-bridge.js';
 import { synthAudio } from '../audio/synth-sfx.js';
 
 /**
- * 核心玩法场景：《星际冲刺》
- * - 手机竖屏触控拖动/左右分屏点击 + 电脑键盘（方向键 / A / D / P 暂停 / M 静音）
- * - 关卡进度条递进、连击倍率、护盾道具、广告复活无缝续玩
+ * 《Celestial Rush》核心街机玩法场景（全英文 UI + 东方玄幻高爽感机制）：
+ * - 单指按住左右跟手滑动（完整保留 iPhone Retina 坐标映射）+ 电脑键盘（←/→、A/D、P 暂停、M 静音）
+ * - 随分数平滑提速、动态低频战鼓 + 五声音阶古风升调拨弦
+ * - 擦身而过（Near-Miss）金色飘字 "+50 NEAR MISS!" 与火花反馈
+ * - 10 连击自动触发 5 秒无敌疾驰（FEVER MODE），直接撞碎青铜雷纹阵/陨星并触发微震 + 顿帧反馈
+ * - 护体金钟（Shield）+ 吸宝灵符（Magnet）+ 流光拖尾皮肤（TRAILS）实时呈现
  */
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -14,48 +17,106 @@ export class GameScene extends Phaser.Scene {
   }
 
   init(data) {
-    this.level = Math.max(1, Number(data?.level || 1));
-    this.score = Math.max(0, Number(data?.score || 0));
-    this.levelStartScore = this.score;
+    const save = platformBridge.getLocalSave();
+    this.score = Math.max(0, Math.round(Number(data?.score || 0)));
+    this.runJade = Math.max(0, Math.round(Number(data?.runJade || 0)));
     this.revived = Boolean(data?.revived);
-    this.targetScore = this.levelStartScore + 180 + this.level * 95;
-    this.combo = 1;
-    this.hasShield = this.revived; // 广告复活自带初始护盾
-    this.invulnerableUntil = this.revived ? 2200 : 0;
+    this.trailSkin = getTrailSkin(data?.trailId || save.selectedTrail);
+
+    this.combo = Math.max(0, Number(data?.combo || 0));
+    this.feverStreak = Math.max(0, Number(data?.feverStreak || 0));
+    this.nearMissCount = Math.max(0, Number(data?.nearMissCount || 0));
+    this.feverCount = Math.max(0, Number(data?.feverCount || 0));
     this.elapsedMs = Math.max(0, Number(data?.elapsedMs || 0));
+
+    // 复活自带护体金钟 + 2.4 秒无敌清屏保护
+    this.hasShield = this.revived;
+    this.invulnerableUntil = this.revived ? 2400 : 0;
+    this.magnetRemainingMs = 0;
+    this.isFever = false;
+    this.feverRemainingMs = 0;
+    this.hitStopMs = 0;
+
     this.isPaused = false;
     this.isEnded = false;
     this.pointerTargetX = null;
-    this.starsBg = [];
+
+    this.motesBg = [];
+    this.speedLines = [];
+    this.fxParticles = [];
+    this.collectSpawnAcc = 0;
+    this.obstacleSpawnAcc = 0;
+    this.trailEmitAcc = 0;
+    this.distScoreAcc = 0;
   }
 
   create() {
     const { width, height } = GAME_DESIGN;
-    this.cameras.main.setBackgroundColor('#070b1a');
+    this.cameras.main.setBackgroundColor('#090714');
+    try {
+      this.scale?.updateBounds?.();
+    } catch (_) {}
 
-    // 背景星空
-    this.starsBg = [];
-    for (let i = 0; i < 75; i++) {
-      const s = this.add.circle(
+    // 玄夜流云与星尘背景
+    this.motesBg = [];
+    for (let i = 0; i < 60; i++) {
+      const isGold = i % 3 === 0;
+      const m = this.add.circle(
         Phaser.Math.Between(0, width),
         Phaser.Math.Between(0, height),
-        Phaser.Math.FloatBetween(1, 2.5),
-        0xffffff,
-        Phaser.Math.FloatBetween(0.2, 0.85)
+        Phaser.Math.FloatBetween(1.1, 2.5),
+        isGold ? 0xfbbf24 : 0x818cf8,
+        Phaser.Math.FloatBetween(0.18, 0.72)
       );
-      s.speedY = Phaser.Math.FloatBetween(80, 220) + this.level * 12;
-      this.starsBg.push(s);
+      m.baseSpeed = Phaser.Math.FloatBetween(95, 240);
+      this.motesBg.push(m);
     }
 
-    // 玩家飞船
-    this.player = this.physics.add.sprite(width / 2, height - 155, 'ship');
-    this.player.setCollideWorldBounds(true);
-    this.player.body.setSize(34, 38);
+    // 狂热模式高速流线（默认隐藏）
+    this.speedLines = [];
+    for (let i = 0; i < 14; i++) {
+      const line = this.add.rectangle(
+        Phaser.Math.Between(16, width - 16),
+        Phaser.Math.Between(0, height),
+        2.5,
+        Phaser.Math.Between(55, 120),
+        0xfbbf24,
+        0
+      ).setDepth(3);
+      line.speed = Phaser.Math.Between(780, 1180);
+      this.speedLines.push(line);
+    }
 
-    // 护盾视觉光环
-    this.shieldRing = this.add.circle(this.player.x, this.player.y, 44, 0xa855f7, 0.16);
-    this.shieldRing.setStrokeStyle(3, 0xc084fc, 0.9);
+    // Fever 屏幕金红光框
+    this.feverFrame = this.add.rectangle(width / 2, height / 2, width - 8, height - 8, 0x000000, 0).setDepth(18);
+    this.feverFrame.setStrokeStyle(6, 0xf97316, 0);
+
+    // 玩家双风火轮（独立渲染于角色脚下，高速旋转并按皮肤配色染色）
+    this.leftWheel = this.add.image(width / 2 - 16, height - 118, 'windFireWheel').setScale(0.78).setDepth(7);
+    this.rightWheel = this.add.image(width / 2 + 16, height - 118, 'windFireWheel').setScale(0.78).setDepth(7);
+    this.leftWheel.setTint(this.trailSkin.wheelTint);
+    this.rightWheel.setTint(this.trailSkin.wheelTint);
+
+    // 玩家行者实体（物理碰撞盒偏紧以优化手感和擦身判定）
+    this.player = this.physics.add.sprite(width / 2, height - 154, 'walker').setDepth(9);
+    this.player.setCollideWorldBounds(true);
+    this.player.body.setSize(34, 48);
+    this.player.body.setOffset(23, 22);
+
+    // 吸宝灵符外环（青金灵光）
+    this.magnetRing = this.add.circle(this.player.x, this.player.y, 58, 0x38bdf8, 0.08).setDepth(6);
+    this.magnetRing.setStrokeStyle(2.2, 0x67e8f9, 0.85);
+    this.magnetRing.setVisible(false);
+
+    // 护体金钟护罩（金色禅钟光环）
+    this.shieldRing = this.add.circle(this.player.x, this.player.y, 48, 0xfbbf24, 0.14).setDepth(10);
+    this.shieldRing.setStrokeStyle(3, 0xfef08a, 0.92);
     this.shieldRing.setVisible(this.hasShield || this.invulnerableUntil > 0);
+
+    // Fever 烈焰光环
+    this.feverAura = this.add.circle(this.player.x, this.player.y, 56, 0xf97316, 0.2).setDepth(8);
+    this.feverAura.setStrokeStyle(3.5, 0xfef08a, 0.95);
+    this.feverAura.setVisible(false);
 
     // 物理分组
     this.collectibles = this.physics.add.group();
@@ -64,10 +125,10 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.overlap(this.player, this.collectibles, this._onCollect, null, this);
     this.physics.add.overlap(this.player, this.obstacles, this._onHitObstacle, null, this);
 
-    // 顶部 HUD
+    // 顶部 HUD（全英文）
     this._createHud();
 
-    // 输入：键盘 + 手机触控
+    // 输入：键盘（左右 / A、D / P / ESC / M）+ 手机单指按住滑动
     this.cursors = this.input.keyboard?.createCursorKeys();
     this.keyA = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyD = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.D);
@@ -75,116 +136,167 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-ESC', () => this._togglePause());
     this.input.keyboard?.on('keydown-M', () => this._toggleSound());
 
+    // 保留高可靠 pointerdown / pointermove 滑动跟手控制逻辑（与 iPhone Retina 坐标 1:1 对齐）
     this.input.on('pointerdown', (pointer) => {
-      if (pointer.y > 105 && !this.isPaused && !this.isEnded) {
-        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 36, width - 36);
+      if (pointer.y > 108 && !this.isPaused && !this.isEnded) {
+        try { synthAudio.ensureContext(); } catch (_) {}
+        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 38, width - 38);
       }
     });
     this.input.on('pointermove', (pointer) => {
-      if (pointer.isDown && pointer.y > 105 && !this.isPaused && !this.isEnded) {
-        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 36, width - 36);
+      if (pointer.isDown && pointer.y > 108 && !this.isPaused && !this.isEnded) {
+        this.pointerTargetX = Phaser.Math.Clamp(pointer.x, 38, width - 38);
       }
     });
     this.input.on('pointerup', () => {
       this.pointerTargetX = null;
     });
 
-    // 定时生成器（随关卡平滑递增节奏）
-    const starDelay = Math.max(420, 820 - this.level * 28);
-    const meteorDelay = Math.max(380, 960 - this.level * 45);
+    // 通知门户 SDK 与 GA4（上报 game_start）
+    try {
+      platformBridge.gameplayStart({
+        trail_id: this.trailSkin.id,
+        revived: this.revived ? 1 : 0
+      });
+    } catch (_) {}
 
-    this.starTimer = this.time.addEvent({
-      delay: starDelay,
-      callback: () => this._spawnCollectible(),
-      loop: true
-    });
-    this.meteorTimer = this.time.addEvent({
-      delay: meteorDelay,
-      callback: () => this._spawnObstacle(),
-      loop: true
-    });
-
-    // 通知门户 SDK：玩法正式开始
-    platformBridge.gameplayStart({ level: this.level, revived: this.revived ? 1 : 0 });
+    // 启动低频战鼓节奏
+    try {
+      synthAudio.setDrumIntensity(0, false);
+      synthAudio.startWarDrums();
+    } catch (_) {}
 
     if (this.revived) {
-      synthAudio.playRevive();
-      this._showFloatingText(width / 2, height / 2 - 40, '⚡ 已复活！护盾生效', '#a855f7');
+      try { synthAudio.playRevive(); } catch (_) {}
+      this._showFloatingText(width / 2, height / 2 - 48, 'REVIVED! GOLDEN BELL ACTIVE', '#fde047', '22px');
     }
-  }
 
-  _createHud() {
-    const { width } = GAME_DESIGN;
-    const hudBg = this.add.rectangle(width / 2, 50, width, 100, 0x0b1229, 0.88).setDepth(20);
-    hudBg.setStrokeStyle(1, 0x1e293b, 1);
-
-    this.levelText = this.add.text(20, 18, `第 ${this.level} 关`, {
-      fontSize: '18px',
-      fontStyle: 'bold',
-      color: '#38bdf8'
-    }).setDepth(21);
-
-    this.scoreText = this.add.text(20, 44, `分数：${this.score}`, {
-      fontSize: '22px',
-      fontStyle: 'bold',
-      color: '#facc15'
-    }).setDepth(21);
-
-    this.comboText = this.add.text(20, 72, '连击 ×1', {
-      fontSize: '14px',
-      color: '#94a3b8'
-    }).setDepth(21);
-
-    // 关卡目标进度条
-    this.add.text(width / 2 + 12, 22, '本关进度', { fontSize: '13px', color: '#94a3b8' }).setOrigin(0.5).setDepth(21);
-    this.add.rectangle(width / 2 + 12, 46, 170, 14, 0x1e293b).setDepth(21);
-    this.progressBar = this.add.rectangle(width / 2 - 73, 46, 0, 14, 0x22c55e).setOrigin(0, 0.5).setDepth(22);
-    this.progressLabel = this.add.text(width / 2 + 12, 68, `${this.score} / ${this.targetScore}`, {
-      fontSize: '13px',
-      color: '#cbd5e1'
-    }).setOrigin(0.5).setDepth(21);
-
-    // 音效与暂停快捷按钮（显式宽松触控热区）
-    const soundHitBg = this.add.rectangle(width - 96, 48, 46, 46, 0x000000, 0)
-      .setDepth(22)
-      .setInteractive({
-        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
-        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-        useHandCursor: true
-      });
-    this.hudSoundBtn = this.add.text(width - 96, 48, synthAudio.enabled ? '🔊' : '🔇', {
-      fontSize: '24px'
-    }).setOrigin(0.5).setDepth(23);
-    soundHitBg.on('pointerdown', () => this._toggleSound());
-
-    const pauseHitBg = this.add.rectangle(width - 40, 48, 46, 46, 0x000000, 0)
-      .setDepth(22)
-      .setInteractive({
-        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
-        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-        useHandCursor: true
-      });
-    this.hudPauseBtn = this.add.text(width - 40, 48, '⏸', {
-      fontSize: '24px'
-    }).setOrigin(0.5).setDepth(23);
-    pauseHitBg.on('pointerdown', () => this._togglePause());
+    // 场景退出时务必停止战鼓循环，防止残留
+    this.events.once('shutdown', () => {
+      try { synthAudio.stopWarDrums(); } catch (_) {}
+    });
 
     this._updateHud();
   }
 
+  _createHud() {
+    const { width } = GAME_DESIGN;
+    const hudBg = this.add.rectangle(width / 2, 52, width, 104, 0x110b22, 0.92).setDepth(20);
+    hudBg.setStrokeStyle(1.5, 0x5b3b1e, 0.9);
+
+    // 左侧：分数与本局灵玉
+    this.scoreText = this.add.text(18, 14, `SCORE ${this.score}`, {
+      fontSize: '23px',
+      fontStyle: 'bold',
+      color: '#fbbf24'
+    }).setDepth(21);
+
+    this.add.image(28, 55, 'spiritJade').setScale(0.45).setDepth(21);
+    this.jadeHudText = this.add.text(44, 46, `${this.runJade} JADE`, {
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#6ee7b7'
+    }).setDepth(21);
+
+    this.statusLineText = this.add.text(18, 74, 'COMBO ×0', {
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#c4b5fd'
+    }).setDepth(21);
+
+    // 中间：10 连击狂热能量槽（FEVER BAR）
+    this.feverLabel = this.add.text(width / 2 + 22, 22, 'FEVER 0/10', {
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#fdba74',
+      letterSpacing: 1
+    }).setOrigin(0.5).setDepth(21);
+
+    const barBg = this.add.rectangle(width / 2 + 22, 46, 154, 14, 0x261a3d).setDepth(21);
+    barBg.setStrokeStyle(1.2, 0x78350f, 0.9);
+    this.feverBar = this.add.rectangle(width / 2 - 55, 46, 0, 12, 0xf97316).setOrigin(0, 0.5).setDepth(22);
+
+    this.buffLabel = this.add.text(width / 2 + 22, 74, '', {
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: '#67e8f9'
+    }).setOrigin(0.5).setDepth(21);
+
+    // 右上角静音与暂停按钮（宽松矩形触控热区）
+    const soundHitBg = this.add.rectangle(width - 96, 48, 46, 46, 0x1e1435, 0.9)
+      .setStrokeStyle(1.5, 0xf59e0b, 0.7)
+      .setDepth(22)
+      .setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true
+      });
+    this.hudSoundBtn = this.add.text(width - 96, 48, synthAudio.enabled ? 'SFX' : 'MUTE', {
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: synthAudio.enabled ? '#fde68a' : '#94a3b8'
+    }).setOrigin(0.5).setDepth(23);
+    soundHitBg.on('pointerdown', () => this._toggleSound());
+
+    const pauseHitBg = this.add.rectangle(width - 38, 48, 46, 46, 0x1e1435, 0.9)
+      .setStrokeStyle(1.5, 0xf59e0b, 0.7)
+      .setDepth(22)
+      .setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true
+      });
+    this.hudPauseBtn = this.add.text(width - 38, 48, 'II', {
+      fontSize: '16px',
+      fontStyle: 'bold',
+      color: '#fde68a'
+    }).setOrigin(0.5).setDepth(23);
+    pauseHitBg.on('pointerdown', () => this._togglePause());
+  }
+
   _updateHud() {
-    this.scoreText.setText(`分数：${this.score}`);
-    this.comboText.setText(`连击 ×${this.combo}${this.hasShield ? ' · 🛡️ 护盾就绪' : ''}`);
-    const span = Math.max(1, this.targetScore - this.levelStartScore);
-    const ratio = Phaser.Math.Clamp((this.score - this.levelStartScore) / span, 0, 1);
-    this.progressBar.width = Math.round(170 * ratio);
-    this.progressLabel.setText(`${this.score} / ${this.targetScore}`);
+    this.scoreText.setText(`SCORE ${this.score}`);
+    this.jadeHudText.setText(`${this.runJade} JADE`);
+    this.statusLineText.setText(
+      this.isFever ? 'FEVER MODE ACTIVE!' : `COMBO ×${this.combo}`
+    );
+    this.statusLineText.setColor(this.isFever ? '#fde047' : '#c4b5fd');
+
+    if (this.isFever) {
+      const sec = Math.max(0, this.feverRemainingMs / 1000).toFixed(1);
+      this.feverLabel.setText(`FEVER ${sec}s`).setColor('#fde047');
+      const ratio = Phaser.Math.Clamp(this.feverRemainingMs / 5000, 0, 1);
+      this.feverBar.width = Math.round(154 * ratio);
+      this.feverBar.setFillStyle(0xfef08a);
+    } else {
+      this.feverLabel.setText(`FEVER ${this.feverStreak}/10`).setColor('#fdba74');
+      const ratio = Phaser.Math.Clamp(this.feverStreak / 10, 0, 1);
+      this.feverBar.width = Math.round(154 * ratio);
+      this.feverBar.setFillStyle(0xf97316);
+    }
+
+    const buffs = [];
+    if (this.hasShield) buffs.push('SHIELD');
+    if (this.magnetRemainingMs > 0) buffs.push(`MAGNET ${Math.ceil(this.magnetRemainingMs / 1000)}s`);
+    this.buffLabel.setText(buffs.join(' · '));
+
     if (typeof window !== 'undefined' && window.__GAME_STATE__) {
       window.__GAME_STATE__.scene = 'GameScene';
-      window.__GAME_STATE__.level = this.level;
       window.__GAME_STATE__.score = this.score;
+      window.__GAME_STATE__.runJade = this.runJade;
+      window.__GAME_STATE__.combo = this.combo;
+      window.__GAME_STATE__.feverActive = this.isFever;
+      window.__GAME_STATE__.nearMissCount = this.nearMissCount;
+      window.__GAME_STATE__.playerX = Math.round(this.player?.x || GAME_DESIGN.width / 2);
       window.__GAME_STATE__.soundEnabled = synthAudio.enabled;
+      window.__GAME_STATE__.revived = this.revived;
     }
+  }
+
+  _getSpeedFactor() {
+    // 随分数平滑加快节奏（1.0x -> 2.85x）
+    const base = 1 + Math.min(1.85, this.score / 2600);
+    return this.isFever ? base * 1.38 : base;
   }
 
   _toggleSound() {
@@ -196,7 +308,8 @@ export class GameScene extends Phaser.Scene {
         synthAudio.playClick();
       }
     } catch (_) {}
-    this.hudSoundBtn.setText(next ? '🔊' : '🔇');
+    this.hudSoundBtn.setText(next ? 'SFX' : 'MUTE');
+    this.hudSoundBtn.setColor(next ? '#fde68a' : '#94a3b8');
     this._updateHud();
     try {
       platformBridge.saveCloudProgress({ soundEnabled: next }).catch(() => {});
@@ -208,38 +321,53 @@ export class GameScene extends Phaser.Scene {
     this.isPaused = !this.isPaused;
     if (this.isPaused) {
       this.physics.world.pause();
-      this.starTimer.paused = true;
-      this.meteorTimer.paused = true;
-      platformBridge.gameplayStop();
+      try { synthAudio.stopWarDrums(); } catch (_) {}
+      try { platformBridge.gameplayStop(); } catch (_) {}
       this._showPauseOverlay();
     } else {
       this._hidePauseOverlay();
       this.physics.world.resume();
-      this.starTimer.paused = false;
-      this.meteorTimer.paused = false;
-      platformBridge.gameplayStart({ level: this.level, resume: 1 });
+      try { synthAudio.startWarDrums(); } catch (_) {}
+      try { platformBridge.gameplayStart({ resume: 1 }); } catch (_) {}
     }
   }
 
   _showPauseOverlay() {
     const { width, height } = GAME_DESIGN;
     this.pauseOverlay = this.add.container(0, 0).setDepth(40);
-    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.65).setInteractive();
-    const box = this.add.rectangle(width / 2, height / 2, 340, 250, 0x0f172a, 0.96);
-    box.setStrokeStyle(2, 0x38bdf8, 0.8);
-    const txt = this.add.text(width / 2, height / 2 - 75, '游戏已暂停', {
-      fontSize: '28px',
+    const dim = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72)
+      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
+    const box = this.add.rectangle(width / 2, height / 2, 348, 256, 0x140e24, 0.97);
+    box.setStrokeStyle(2, 0xf59e0b, 0.9);
+    const txt = this.add.text(width / 2, height / 2 - 76, 'PAUSED', {
+      fontSize: '30px',
       fontStyle: 'bold',
-      color: '#f8fafc'
+      color: '#fbbf24',
+      letterSpacing: 3
     }).setOrigin(0.5);
 
-    const resumeBg = this.add.rectangle(width / 2, height / 2, 220, 50, 0x0ea5e9).setInteractive({ useHandCursor: true });
-    const resumeTxt = this.add.text(width / 2, height / 2, '继续冲刺', { fontSize: '20px', fontStyle: 'bold', color: '#fff' }).setOrigin(0.5);
+    const resumeHit = new Phaser.Geom.Rectangle(-12, -12, 248, 76);
+    const resumeBg = this.add.rectangle(width / 2, height / 2, 224, 52, 0xdc2626)
+      .setStrokeStyle(2, 0xfbbf24, 0.85)
+      .setInteractive({ hitArea: resumeHit, hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    const resumeTxt = this.add.text(width / 2, height / 2, 'RESUME', {
+      fontSize: '20px',
+      fontStyle: 'bold',
+      color: '#ffffff'
+    }).setOrigin(0.5);
     resumeBg.on('pointerdown', () => this._togglePause());
 
-    const menuBg = this.add.rectangle(width / 2, height / 2 + 72, 220, 46, 0x1e293b).setInteractive({ useHandCursor: true });
-    const menuTxt = this.add.text(width / 2, height / 2 + 72, '返回主菜单', { fontSize: '18px', color: '#cbd5e1' }).setOrigin(0.5);
+    const menuHit = new Phaser.Geom.Rectangle(-12, -12, 248, 72);
+    const menuBg = this.add.rectangle(width / 2, height / 2 + 74, 224, 48, 0x1e1435)
+      .setStrokeStyle(1.5, 0x78350f, 0.9)
+      .setInteractive({ hitArea: menuHit, hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    const menuTxt = this.add.text(width / 2, height / 2 + 74, 'MAIN MENU', {
+      fontSize: '18px',
+      fontStyle: 'bold',
+      color: '#cbd5e1'
+    }).setOrigin(0.5);
     menuBg.on('pointerdown', () => {
+      try { synthAudio.stopWarDrums(); } catch (_) {}
       this.scene.start('MenuScene', { save: platformBridge.getLocalSave() });
     });
 
@@ -254,36 +382,50 @@ export class GameScene extends Phaser.Scene {
   }
 
   _spawnCollectible() {
-    if (this.isPaused || this.isEnded) return;
     const { width } = GAME_DESIGN;
-    const x = Phaser.Math.Between(42, width - 42);
+    const speedFactor = this._getSpeedFactor();
+    const x = Phaser.Math.Between(44, width - 44);
     const roll = Math.random();
-    let texture = 'star';
-    let itemType = 'star';
-    if (roll > 0.9) {
-      texture = 'shieldItem';
+    let texture = 'spiritJade';
+    let itemType = 'jade';
+    if (roll > 0.92 && !this.hasShield) {
+      texture = 'goldenBell';
       itemType = 'shield';
-    } else if (roll > 0.72) {
-      texture = 'goldStar';
-      itemType = 'gold';
+    } else if (roll > 0.84 && this.magnetRemainingMs <= 0) {
+      texture = 'magnetTalisman';
+      itemType = 'magnet';
     }
-    const item = this.collectibles.create(x, 108, texture);
+
+    const item = this.collectibles.create(x, 108, texture).setDepth(7);
     item.setData('itemType', itemType);
-    item.setVelocityY(210 + this.level * 18 + Phaser.Math.Between(0, 60));
-    item.setAngularVelocity(Phaser.Math.Between(-90, 90));
+    item.setVelocityY((220 + Phaser.Math.Between(0, 55)) * speedFactor);
+    item.setAngularVelocity(itemType === 'jade' ? Phaser.Math.Between(-75, 75) : Phaser.Math.Between(-35, 35));
   }
 
   _spawnObstacle() {
-    if (this.isPaused || this.isEnded) return;
     const { width } = GAME_DESIGN;
-    const x = Phaser.Math.Between(42, width - 42);
-    const meteor = this.obstacles.create(x, 108, 'meteor');
-    const scale = Phaser.Math.FloatBetween(0.82, 1.2);
-    meteor.setScale(scale);
-    meteor.body.setCircle(18, 10, 10);
-    meteor.setVelocityY(260 + this.level * 26 + Phaser.Math.Between(0, 85));
-    meteor.setVelocityX(Phaser.Math.Between(-35 - this.level * 4, 35 + this.level * 4));
-    meteor.setAngularVelocity(Phaser.Math.Between(-150, 150));
+    const speedFactor = this._getSpeedFactor();
+    const x = Phaser.Math.Between(46, width - 46);
+    const isBronze = Math.random() > 0.45;
+    const texture = isBronze ? 'bronzeArray' : 'celestialMeteor';
+
+    const obs = this.obstacles.create(x, 108, texture).setDepth(8);
+    const scale = Phaser.Math.FloatBetween(0.86, 1.16);
+    obs.setScale(scale);
+    obs.setData('obstacleKind', isBronze ? 'bronze' : 'meteor');
+    obs.setData('nearMissed', false);
+
+    if (isBronze) {
+      obs.body.setCircle(22, 12, 12);
+      obs.setVelocityY((255 + Phaser.Math.Between(0, 65)) * speedFactor);
+      obs.setVelocityX(Phaser.Math.Between(-36, 36) * Math.min(1.6, speedFactor));
+      obs.setAngularVelocity(Phaser.Math.Between(140, 240) * (Math.random() > 0.5 ? 1 : -1));
+    } else {
+      obs.body.setCircle(20, 10, 10);
+      obs.setVelocityY((290 + Phaser.Math.Between(0, 80)) * speedFactor);
+      obs.setVelocityX(Phaser.Math.Between(-58, 58) * Math.min(1.6, speedFactor));
+      obs.setAngularVelocity(Phaser.Math.Between(-190, 190));
+    }
   }
 
   _onCollect(_player, item) {
@@ -295,135 +437,311 @@ export class GameScene extends Phaser.Scene {
 
     if (type === 'shield') {
       this.hasShield = true;
-      synthAudio.playShield();
-      this._showFloatingText(ix, iy, '🛡️ 护盾+1', '#c084fc');
+      try { synthAudio.playShield(); } catch (_) {}
+      this._spawnBurst(ix, iy, 10, 0xfef08a, 'spark');
+      this._showFloatingText(ix, iy, 'GOLDEN BELL!', '#fde047', '20px');
+    } else if (type === 'magnet') {
+      this.magnetRemainingMs = 7000;
+      try { synthAudio.playMagnet(); } catch (_) {}
+      this._spawnBurst(ix, iy, 10, 0x67e8f9, 'spark');
+      this._showFloatingText(ix, iy, 'MAGNET 7S!', '#67e8f9', '20px');
     } else {
-      const base = type === 'gold' ? 35 : 12;
-      const gain = Math.round(base * (1 + (this.combo - 1) * 0.15));
+      // 发光金玉（Spirit Jade）：五声音阶连击升调 + 累计 10 连击触发 FEVER MODE
+      this.combo += 1;
+      this.runJade += 1;
+      const mult = 1 + Math.min(1.5, (this.combo - 1) * 0.12);
+      const gain = Math.round(20 * mult * (this.isFever ? 1.5 : 1));
       this.score += gain;
-      this.combo = Math.min(8, this.combo + 1);
-      if (type === 'gold') synthAudio.playBonus();
-      else synthAudio.playCollect(this.combo);
-      this._showFloatingText(ix, iy, `+${gain}`, type === 'gold' ? '#facc15' : '#38bdf8');
+
+      try { synthAudio.playCollect(this.combo); } catch (_) {}
+      this._spawnBurst(ix, iy, 7, 0x34d399, 'spark');
+      this._showFloatingText(ix, iy, `+${gain}`, '#6ee7b7', '19px');
+
+      if (!this.isFever) {
+        this.feverStreak += 1;
+        if (this.feverStreak >= 10) {
+          this._triggerFeverMode();
+        }
+      }
     }
 
     this._updateHud();
+  }
 
-    // 达成关卡目标分数 -> 过关！
-    if (this.score >= this.targetScore) {
-      this._finishRound(true);
-    }
+  _triggerFeverMode() {
+    this.isFever = true;
+    this.feverRemainingMs = 5000;
+    this.feverStreak = 0;
+    this.feverCount += 1;
+
+    try { synthAudio.playFeverStart(); } catch (_) {}
+    this.cameras.main.shake(180, 0.01);
+    this._spawnBurst(this.player.x, this.player.y, 18, 0xfbbf24, 'spark');
+    this._showFloatingText(GAME_DESIGN.width / 2, 230, 'FEVER MODE! SMASH ALL!', '#fde047', '28px');
+
+    try {
+      platformBridge.trackEvent('fever_trigger', {
+        score: this.score,
+        combo: this.combo,
+        fever_count: this.feverCount
+      });
+    } catch (_) {}
   }
 
   _onHitObstacle(_player, obstacle) {
     if (this.isEnded || !obstacle.active) return;
+    const ox = obstacle.x;
+    const oy = obstacle.y;
+    const kind = obstacle.getData('obstacleKind');
     obstacle.destroy();
 
-    if (this.invulnerableUntil > 0) return;
-
-    if (this.hasShield) {
-      this.hasShield = false;
-      this.invulnerableUntil = 1200;
-      this.combo = 1;
-      synthAudio.playHit();
-      this.cameras.main.shake(140, 0.008);
-      this._showFloatingText(this.player.x, this.player.y - 35, '🛡️ 护盾抵挡！', '#c084fc');
+    // 狂热模式：直接撞碎沿途障碍 + 屏幕微震 + 顿帧反馈
+    if (this.isFever) {
+      this.score += 80;
+      this.hitStopMs = 42;
+      try { synthAudio.playSmash(); } catch (_) {}
+      this.cameras.main.shake(115, 0.009);
+      this._spawnBurst(ox, oy, 14, kind === 'bronze' ? 0x2dd4bf : 0xf97316, 'shard');
+      this._showFloatingText(ox, oy - 14, '+80 SMASH!', '#fde047', '22px');
       this._updateHud();
       return;
     }
 
-    synthAudio.playHit();
-    this.cameras.main.shake(220, 0.015);
-    this._finishRound(false);
-  }
+    if (this.invulnerableUntil > 0) return;
 
-  _finishRound(won) {
-    this.isEnded = true;
-    this.physics.world.pause();
-    this.starTimer.remove(false);
-    this.meteorTimer.remove(false);
-    platformBridge.gameplayStop();
-
-    const durationSec = Math.max(1, Math.round(this.elapsedMs / 1000));
-    if (won) {
-      synthAudio.playLevelClear();
-      platformBridge.happyTime();
-      platformBridge.trackEvent('level_complete', {
-        level: this.level,
-        score: this.score,
-        duration_sec: durationSec,
-        revived: this.revived ? 1 : 0
-      });
-    } else {
-      platformBridge.trackEvent('level_fail', {
-        level: this.level,
-        score: this.score,
-        duration_sec: durationSec,
-        revived: this.revived ? 1 : 0
-      });
+    // 护体金钟抵挡一次撞击
+    if (this.hasShield) {
+      this.hasShield = false;
+      this.invulnerableUntil = 1400;
+      try { synthAudio.playBellBlock(); } catch (_) {}
+      this.cameras.main.shake(150, 0.01);
+      this._spawnBurst(ox, oy, 12, 0xfef08a, 'shard');
+      this._showFloatingText(this.player.x, this.player.y - 42, 'BELL SHIELD BLOCKED!', '#fde047', '21px');
+      this._updateHud();
+      return;
     }
 
-    this.time.delayedCall(260, () => {
-      this.scene.start('ResultScene', {
-        won,
-        level: this.level,
+    // 致命撞击 -> 结束本局
+    try { synthAudio.playHit(); } catch (_) {}
+    this.cameras.main.shake(240, 0.016);
+    this._spawnBurst(this.player.x, this.player.y, 18, 0xef4444, 'shard');
+    this._finishRound();
+  }
+
+  _finishRound() {
+    this.isEnded = true;
+    this.physics.world.pause();
+    try { synthAudio.stopWarDrums(); } catch (_) {}
+    try { platformBridge.gameplayStop(); } catch (_) {}
+
+    const durationSec = Math.max(1, Math.round(this.elapsedMs / 1000));
+    try {
+      platformBridge.trackEvent('game_over', {
         score: this.score,
+        run_jade: this.runJade,
+        near_misses: this.nearMissCount,
+        fever_count: this.feverCount,
+        duration_sec: durationSec,
+        revived: this.revived ? 1 : 0,
+        trail_id: this.trailSkin.id
+      });
+    } catch (_) {}
+
+    this.time.delayedCall(280, () => {
+      this.scene.start('ResultScene', {
+        score: this.score,
+        runJade: this.runJade,
+        nearMissCount: this.nearMissCount,
+        feverCount: this.feverCount,
+        combo: this.combo,
+        feverStreak: this.feverStreak,
         durationSec,
         elapsedMs: this.elapsedMs,
-        revived: this.revived
+        revived: this.revived,
+        trailId: this.trailSkin.id
       });
     });
   }
 
-  _showFloatingText(x, y, text, color) {
+  _spawnBurst(x, y, count, tint, texture = 'spark') {
+    for (let i = 0; i < count; i++) {
+      const p = this.add.image(x, y, texture).setDepth(14);
+      p.setTint(tint);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const spd = Phaser.Math.FloatBetween(95, 290);
+      p.vx = Math.cos(angle) * spd;
+      p.vy = Math.sin(angle) * spd;
+      p.spin = Phaser.Math.FloatBetween(-360, 360);
+      p.life = 0;
+      p.maxLife = Phaser.Math.Between(260, 460);
+      p.baseScale = Phaser.Math.FloatBetween(0.55, 1.05);
+      p.setScale(p.baseScale);
+      this.fxParticles.push(p);
+    }
+  }
+
+  _showFloatingText(x, y, text, color, fontSize = '20px') {
     const label = this.add.text(x, y, text, {
-      fontSize: '20px',
+      fontSize,
       fontStyle: 'bold',
-      color
+      color,
+      stroke: '#090714',
+      strokeThickness: 5
     }).setOrigin(0.5).setDepth(30);
+    label.setScale(0.75);
     this.tweens.add({
       targets: label,
-      y: y - 46,
+      scaleX: 1.08,
+      scaleY: 1.08,
+      duration: 110,
+      yoyo: true
+    });
+    this.tweens.add({
+      targets: label,
+      y: y - 54,
       alpha: 0,
-      duration: 620,
+      duration: 720,
       onComplete: () => label.destroy()
     });
   }
 
   update(_time, delta) {
     if (this.isPaused || this.isEnded) return;
+
+    // 顿帧打击反馈（Hit-Stop）：Fever 撞碎障碍物时短暂停滞 42ms
+    if (this.hitStopMs > 0) {
+      this.hitStopMs = Math.max(0, this.hitStopMs - delta);
+      if (this.hitStopMs > 0) {
+        if (!this.physics.world.isPaused) this.physics.world.pause();
+        return;
+      }
+      if (this.physics.world.isPaused) this.physics.world.resume();
+    }
+
     const dt = delta / 1000;
     const { width, height } = GAME_DESIGN;
     this.elapsedMs += delta;
 
-    // 星空滚动
-    for (const s of this.starsBg) {
-      s.y += s.speedY * dt;
-      if (s.y > height + 4) {
-        s.y = -4;
-        s.x = Phaser.Math.Between(0, width);
+    const speedFactor = this._getSpeedFactor();
+    // 同步动态低频战鼓节奏强度
+    try {
+      synthAudio.setDrumIntensity(Math.min(1, (speedFactor - 1) / 1.8), this.isFever);
+    } catch (_) {}
+
+    // 距离得分平滑累加
+    this.distScoreAcc += delta;
+    if (this.distScoreAcc >= 240) {
+      this.distScoreAcc = 0;
+      this.score += this.isFever ? 5 : 2;
+      this._updateHud();
+    }
+
+    // 狂热模式倒计时
+    if (this.isFever) {
+      this.feverRemainingMs = Math.max(0, this.feverRemainingMs - delta);
+      this.feverFrame.setStrokeStyle(6, 0xf97316, 0.55 + Math.sin(this.elapsedMs * 0.02) * 0.3);
+      if (this.feverRemainingMs <= 0) {
+        this.isFever = false;
+        this.invulnerableUntil = 950;
+        this.feverFrame.setStrokeStyle(6, 0xf97316, 0);
+        this._showFloatingText(width / 2, 240, 'FEVER ENDED', '#fdba74', '18px');
+      }
+      this._updateHud();
+    }
+
+    // 吸宝灵符倒计时
+    if (this.magnetRemainingMs > 0) {
+      this.magnetRemainingMs = Math.max(0, this.magnetRemainingMs - delta);
+      this._updateHud();
+    }
+
+    // 星空流云与 Fever 高速流线滚动
+    for (const m of this.motesBg) {
+      m.y += m.baseSpeed * speedFactor * dt;
+      if (m.y > height + 4) {
+        m.y = -4;
+        m.x = Phaser.Math.Between(0, width);
+      }
+    }
+    for (const line of this.speedLines) {
+      line.setAlpha(this.isFever ? 0.35 : 0);
+      if (this.isFever) {
+        line.y += line.speed * dt;
+        if (line.y > height + 80) {
+          line.y = -80;
+          line.x = Phaser.Math.Between(16, width - 16);
+        }
       }
     }
 
-    // 键盘与触控双模式操控
-    const moveSpeed = 430;
+    // 键盘与单指按住滑动双模式操控
+    const keyMoveSpeed = 480;
     let vx = 0;
     if (this.cursors?.left?.isDown || this.keyA?.isDown) {
-      vx = -moveSpeed;
+      vx = -keyMoveSpeed;
       this.pointerTargetX = null;
     } else if (this.cursors?.right?.isDown || this.keyD?.isDown) {
-      vx = moveSpeed;
+      vx = keyMoveSpeed;
       this.pointerTargetX = null;
     } else if (this.pointerTargetX !== null) {
       const diff = this.pointerTargetX - this.player.x;
-      if (Math.abs(diff) > 4) {
-        vx = Phaser.Math.Clamp(diff * 12, -560, 560);
+      if (Math.abs(diff) > 3) {
+        vx = Phaser.Math.Clamp(diff * 18, -760, 760);
       }
     }
     this.player.setVelocityX(vx);
-    this.player.setAngle(Phaser.Math.Clamp(vx * 0.035, -16, 16));
+    this.player.setAngle(Phaser.Math.Clamp(vx * 0.03, -17, 17));
 
-    // 无敌计时与护盾光环跟随
+    // 双风火轮跟随脚底高速旋转
+    const wheelScale = this.isFever ? 0.96 : 0.78;
+    this.leftWheel.setPosition(this.player.x - 16, this.player.y + 36).setScale(wheelScale);
+    this.rightWheel.setPosition(this.player.x + 16, this.player.y + 36).setScale(wheelScale);
+    const wheelSpin = (this.isFever ? 980 : 540) * dt;
+    this.leftWheel.angle += wheelSpin;
+    this.rightWheel.angle -= wheelSpin;
+
+    // 实时发射当前装备 TRAILS 皮肤的流光拖尾
+    this.trailEmitAcc += delta;
+    const emitInterval = this.isFever ? 18 : 30;
+    if (this.trailEmitAcc >= emitInterval) {
+      this.trailEmitAcc = 0;
+      const side = Math.random() > 0.5 ? -16 : 16;
+      const p = this.add.image(
+        this.player.x + side + Phaser.Math.Between(-5, 5),
+        this.player.y + 42,
+        'spark'
+      ).setDepth(5);
+      const tint = this.isFever
+        ? (Math.random() > 0.4 ? 0xfef08a : 0xef4444)
+        : (Math.random() > 0.45 ? this.trailSkin.primaryHex : this.trailSkin.secondaryHex);
+      p.setTint(tint);
+      p.vx = -vx * 0.08 + Phaser.Math.FloatBetween(-22, 22);
+      p.vy = Phaser.Math.FloatBetween(120, 210) * speedFactor;
+      p.spin = 0;
+      p.life = 0;
+      p.maxLife = this.isFever ? 380 : 300;
+      p.baseScale = this.isFever ? Phaser.Math.FloatBetween(0.75, 1.25) : Phaser.Math.FloatBetween(0.45, 0.9);
+      p.setScale(p.baseScale);
+      this.fxParticles.push(p);
+    }
+
+    // 更新全部粒子（拖尾、火花、碎片）
+    for (let i = this.fxParticles.length - 1; i >= 0; i--) {
+      const p = this.fxParticles[i];
+      p.life += delta;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.spin) p.angle += p.spin * dt;
+      const ratio = 1 - p.life / p.maxLife;
+      p.setAlpha(Math.max(0, ratio));
+      p.setScale(Math.max(0.05, ratio * p.baseScale));
+      if (p.life >= p.maxLife) {
+        p.destroy();
+        this.fxParticles.splice(i, 1);
+      }
+    }
+
+    // 护体金钟 / 无敌闪烁 / 吸宝灵符 / Fever 光环跟随
     if (this.invulnerableUntil > 0) {
       this.invulnerableUntil = Math.max(0, this.invulnerableUntil - delta);
       this.player.setAlpha(Math.sin(this.elapsedMs * 0.03) > 0 ? 1 : 0.45);
@@ -432,20 +750,87 @@ export class GameScene extends Phaser.Scene {
     }
     this.shieldRing.setPosition(this.player.x, this.player.y);
     this.shieldRing.setVisible(this.hasShield || this.invulnerableUntil > 0);
+    this.magnetRing.setPosition(this.player.x, this.player.y);
+    this.magnetRing.setVisible(this.magnetRemainingMs > 0);
+    if (this.magnetRemainingMs > 0) {
+      this.magnetRing.setScale(0.95 + Math.sin(this.elapsedMs * 0.015) * 0.12);
+    }
+    this.feverAura.setPosition(this.player.x, this.player.y);
+    this.feverAura.setVisible(this.isFever);
+    if (this.isFever) {
+      this.feverAura.setScale(1.0 + Math.sin(this.elapsedMs * 0.025) * 0.14);
+    }
 
-    // 回收越界物体（使用 Phaser 4 兼容的 getChildren().slice() 安全遍历，保持 60FPS 零内存泄漏）
+    // 自适应生成节奏（随分数平滑提速）
+    const collectInterval = Math.max(320, 680 / Math.sqrt(speedFactor));
+    const obstacleInterval = Math.max(300, 820 / Math.pow(speedFactor, 0.72));
+    this.collectSpawnAcc += delta;
+    this.obstacleSpawnAcc += delta;
+    if (this.collectSpawnAcc >= collectInterval) {
+      this.collectSpawnAcc = 0;
+      this._spawnCollectible();
+    }
+    if (this.obstacleSpawnAcc >= obstacleInterval) {
+      this.obstacleSpawnAcc = 0;
+      this._spawnObstacle();
+    }
+
+    // 收集物遍历：吸宝灵符磁吸 + 越界回收（严格使用 Phaser 4 兼容的 getChildren().slice()）
     const collectiblesList = this.collectibles.getChildren().slice();
     for (const obj of collectiblesList) {
-      if (obj && obj.active && obj.y > height + 50) {
-        if (obj.getData('itemType') !== 'shield') this.combo = 1;
+      if (!obj || !obj.active) continue;
+      if (this.magnetRemainingMs > 0 && obj.getData('itemType') === 'jade') {
+        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, obj.x, obj.y);
+        if (dist < 250) {
+          const angle = Phaser.Math.Angle.Between(obj.x, obj.y, this.player.x, this.player.y);
+          obj.setVelocity(Math.cos(angle) * 640, Math.sin(angle) * 640);
+        }
+      }
+      if (obj.y > height + 50) {
+        if (obj.getData('itemType') === 'jade' && !this.isFever) {
+          this.combo = 0;
+          this.feverStreak = 0;
+          this._updateHud();
+        }
         obj.destroy();
       }
     }
+
+    // 障碍物遍历：擦身而过（Near-Miss）实时判定 + 越界回收
     const obstaclesList = this.obstacles.getChildren().slice();
     for (const obj of obstaclesList) {
-      if (obj && obj.active && (obj.y > height + 60 || obj.x < -60 || obj.x > width + 60)) {
+      if (!obj || !obj.active) continue;
+
+      if (!this.isFever && this.invulnerableUntil <= 0 && !obj.getData('nearMissed')) {
+        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, obj.x, obj.y);
+        // 贴近障碍物边缘闪避（距离 < 82px 且正在擦过玩家身体高度）
+        if (dist < 82 && obj.y >= this.player.y - 22 && obj.y <= this.player.y + 42) {
+          obj.setData('nearMissed', true);
+          this.nearMissCount += 1;
+          this.score += 50;
+          try { synthAudio.playNearMiss(); } catch (_) {}
+          const midX = (this.player.x + obj.x) / 2;
+          const midY = (this.player.y + obj.y) / 2;
+          this._spawnBurst(midX, midY, 10, 0xfef08a, 'spark');
+          this._showFloatingText(this.player.x, this.player.y - 54, '+50 NEAR MISS!', '#fde047', '22px');
+          try {
+            platformBridge.trackEvent('near_miss', {
+              score: this.score,
+              near_miss_count: this.nearMissCount
+            });
+          } catch (_) {}
+          this._updateHud();
+        }
+      }
+
+      if (obj.y > height + 65 || obj.x < -70 || obj.x > width + 70) {
         obj.destroy();
       }
+    }
+
+    // 同步玩家实时坐标至只读状态快照（供手机滑动验收测试验证）
+    if (typeof window !== 'undefined' && window.__GAME_STATE__) {
+      window.__GAME_STATE__.playerX = Math.round(this.player.x);
     }
   }
 }

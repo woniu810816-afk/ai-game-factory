@@ -23,11 +23,18 @@ document.addEventListener('touchmove', (e) => {
 // 暴露轻量只读运行态快照，便于移动端验收测试与排障（绝不含任何密钥）
 window.__GAME_STATE__ = {
   scene: 'BootScene',
-  selectedLevel: 1,
-  level: 1,
   score: 0,
+  runJade: 0,
+  jadeBalance: 0,
+  combo: 0,
+  feverActive: false,
+  nearMissCount: 0,
+  playerX: GAME_DESIGN.width / 2,
+  selectedTrail: 'crimson_flame',
+  unlockedTrails: ['crimson_flame'],
   soundEnabled: true,
-  leaderboardOpen: false
+  leaderboardOpen: false,
+  revived: false
 };
 
 const gameConfig = {
@@ -35,7 +42,7 @@ const gameConfig = {
   parent: 'app',
   width: GAME_DESIGN.width,
   height: GAME_DESIGN.height,
-  backgroundColor: '#070b1a',
+  backgroundColor: '#090714',
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
