@@ -144,16 +144,30 @@ export class GameScene extends Phaser.Scene {
       color: '#cbd5e1'
     }).setOrigin(0.5).setDepth(21);
 
-    // 音效与暂停快捷按钮
-    this.hudSoundBtn = this.add.text(width - 94, 48, synthAudio.enabled ? '🔊' : '🔇', {
+    // 音效与暂停快捷按钮（显式宽松触控热区）
+    const soundHitBg = this.add.rectangle(width - 96, 48, 46, 46, 0x000000, 0)
+      .setDepth(22)
+      .setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true
+      });
+    this.hudSoundBtn = this.add.text(width - 96, 48, synthAudio.enabled ? '🔊' : '🔇', {
       fontSize: '24px'
-    }).setOrigin(0.5).setDepth(22).setInteractive({ useHandCursor: true });
-    this.hudSoundBtn.on('pointerdown', () => this._toggleSound());
+    }).setOrigin(0.5).setDepth(23);
+    soundHitBg.on('pointerdown', () => this._toggleSound());
 
+    const pauseHitBg = this.add.rectangle(width - 40, 48, 46, 46, 0x000000, 0)
+      .setDepth(22)
+      .setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-10, -10, 66, 66),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true
+      });
     this.hudPauseBtn = this.add.text(width - 40, 48, '⏸', {
       fontSize: '24px'
-    }).setOrigin(0.5).setDepth(22).setInteractive({ useHandCursor: true });
-    this.hudPauseBtn.on('pointerdown', () => this._togglePause());
+    }).setOrigin(0.5).setDepth(23);
+    pauseHitBg.on('pointerdown', () => this._togglePause());
 
     this._updateHud();
   }
@@ -165,14 +179,28 @@ export class GameScene extends Phaser.Scene {
     const ratio = Phaser.Math.Clamp((this.score - this.levelStartScore) / span, 0, 1);
     this.progressBar.width = Math.round(170 * ratio);
     this.progressLabel.setText(`${this.score} / ${this.targetScore}`);
+    if (typeof window !== 'undefined' && window.__GAME_STATE__) {
+      window.__GAME_STATE__.scene = 'GameScene';
+      window.__GAME_STATE__.level = this.level;
+      window.__GAME_STATE__.score = this.score;
+      window.__GAME_STATE__.soundEnabled = synthAudio.enabled;
+    }
   }
 
   _toggleSound() {
     const next = !synthAudio.enabled;
-    synthAudio.setEnabled(next);
-    if (next) synthAudio.playClick();
+    try {
+      synthAudio.setEnabled(next);
+      if (next) {
+        synthAudio.ensureContext();
+        synthAudio.playClick();
+      }
+    } catch (_) {}
     this.hudSoundBtn.setText(next ? '🔊' : '🔇');
-    platformBridge.saveCloudProgress({ soundEnabled: next });
+    this._updateHud();
+    try {
+      platformBridge.saveCloudProgress({ soundEnabled: next }).catch(() => {});
+    } catch (_) {}
   }
 
   _togglePause() {
@@ -405,19 +433,19 @@ export class GameScene extends Phaser.Scene {
     this.shieldRing.setPosition(this.player.x, this.player.y);
     this.shieldRing.setVisible(this.hasShield || this.invulnerableUntil > 0);
 
-    // 回收越界物体，保持 60FPS 零内存泄漏
-    this.collectibles.children.each((obj) => {
-      if (obj.y > height + 50) {
+    // 回收越界物体（使用 Phaser 4 兼容的 getChildren().slice() 安全遍历，保持 60FPS 零内存泄漏）
+    const collectiblesList = this.collectibles.getChildren().slice();
+    for (const obj of collectiblesList) {
+      if (obj && obj.active && obj.y > height + 50) {
         if (obj.getData('itemType') !== 'shield') this.combo = 1;
         obj.destroy();
       }
-      return true;
-    });
-    this.obstacles.children.each((obj) => {
-      if (obj.y > height + 60 || obj.x < -60 || obj.x > width + 60) {
+    }
+    const obstaclesList = this.obstacles.getChildren().slice();
+    for (const obj of obstaclesList) {
+      if (obj && obj.active && (obj.y > height + 60 || obj.x < -60 || obj.x > width + 60)) {
         obj.destroy();
       }
-      return true;
-    });
+    }
   }
 }

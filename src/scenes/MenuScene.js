@@ -4,7 +4,9 @@ import { platformBridge } from '../platform-bridge.js';
 import { synthAudio } from '../audio/synth-sfx.js';
 
 /**
- * 主菜单场景：支持关卡选择、音效开关、全球排行榜弹窗与一键开局
+ * 主菜单场景：支持全关卡自由切换、音效开关、全球排行榜弹窗与一键开局
+ * 所有按钮均显式绑定宽松的 Phaser.Geom.Rectangle 点击热区与 try/catch 容错，
+ * 确保 iPhone Safari 高分屏触控 100% 灵敏响应。
  */
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -21,10 +23,29 @@ export class MenuScene extends Phaser.Scene {
     );
   }
 
+  _syncDebugState() {
+    if (typeof window !== 'undefined' && window.__GAME_STATE__) {
+      window.__GAME_STATE__.scene = 'MenuScene';
+      window.__GAME_STATE__.selectedLevel = this.selectedLevel;
+      window.__GAME_STATE__.soundEnabled = synthAudio.enabled;
+      window.__GAME_STATE__.leaderboardOpen = Boolean(this.leaderboardContainer);
+      window.__GAME_STATE__.buttons = {
+        sound: { x: GAME_DESIGN.width - 88, y: 38 },
+        prevLevel: { x: GAME_DESIGN.width / 2 - 156, y: 580 },
+        nextLevel: { x: GAME_DESIGN.width / 2 + 156, y: 580 },
+        start: { x: GAME_DESIGN.width / 2, y: 675 },
+        leaderboard: { x: GAME_DESIGN.width / 2, y: 764 }
+      };
+    }
+  }
+
   create() {
     const { width, height } = GAME_DESIGN;
     this.cameras.main.setBackgroundColor('#070b1a');
-    platformBridge.gameplayStop();
+    try {
+      this.scale?.updateBounds?.();
+      platformBridge.gameplayStop();
+    } catch (_) {}
 
     // 视差星空背景
     this.starsBg = [];
@@ -54,15 +75,16 @@ export class MenuScene extends Phaser.Scene {
     });
 
     this.soundBtn = this._createButton(
-      width - 84,
-      36,
-      128,
+      width - 88,
       38,
+      136,
+      44,
       synthAudio.enabled ? '🔊 音效开' : '🔇 音效关',
       0x1e293b,
       '#e2e8f0',
       '15px',
-      () => this._toggleSound()
+      () => this._toggleSound(),
+      12
     );
 
     // 标题与副标题
@@ -107,61 +129,98 @@ export class MenuScene extends Phaser.Scene {
       color: '#facc15'
     }).setOrigin(0.5);
 
-    this.add.text(width / 2 + 110, 472, '已解锁关卡', { fontSize: '14px', color: '#64748b' }).setOrigin(0.5);
+    this.add.text(width / 2 + 110, 472, '已解锁进度', { fontSize: '14px', color: '#64748b' }).setOrigin(0.5);
     this.add.text(width / 2 + 110, 502, `第 ${this.saveData.maxLevel || 1} 关`, {
       fontSize: '26px',
       fontStyle: 'bold',
       color: '#38bdf8'
     }).setOrigin(0.5);
 
-    // 关卡选择器
+    // 关卡选择器（支持 1 ~ maxLevels 自由切换，大触控热区）
     this.levelLabel = this.add.text(width / 2, 580, `挑战关卡：第 ${this.selectedLevel} 关`, {
-      fontSize: '20px',
+      fontSize: '21px',
       fontStyle: 'bold',
       color: '#f8fafc'
     }).setOrigin(0.5);
 
-    this._createButton(width / 2 - 140, 580, 52, 40, '◀', 0x1e293b, '#38bdf8', '20px', () => {
-      if (this.selectedLevel > 1) {
-        this.selectedLevel--;
-        this.levelLabel.setText(`挑战关卡：第 ${this.selectedLevel} 关`);
-      }
-    });
+    this.prevLevelBtn = this._createButton(
+      width / 2 - 156,
+      580,
+      72,
+      54,
+      '◀',
+      0x1e293b,
+      '#38bdf8',
+      '22px',
+      () => this._changeLevel(-1),
+      14
+    );
 
-    this._createButton(width / 2 + 140, 580, 52, 40, '▶', 0x1e293b, '#38bdf8', '20px', () => {
-      const maxUnlocked = Math.min(platformBridge.config.maxLevels, Math.max(1, Number(this.saveData.maxLevel || 1)));
-      if (this.selectedLevel < maxUnlocked) {
-        this.selectedLevel++;
-        this.levelLabel.setText(`挑战关卡：第 ${this.selectedLevel} 关`);
-      }
-    });
+    this.nextLevelBtn = this._createButton(
+      width / 2 + 156,
+      580,
+      72,
+      54,
+      '▶',
+      0x1e293b,
+      '#38bdf8',
+      '22px',
+      () => this._changeLevel(1),
+      14
+    );
 
-    // 主按钮：开始游戏
-    this._createButton(width / 2, 675, 340, 68, '🚀 开始冲刺', 0x0ea5e9, '#ffffff', '26px', () => {
-      this._startGame();
-    });
+    // 主按钮：开始冲刺
+    this.startBtn = this._createButton(
+      width / 2,
+      675,
+      350,
+      70,
+      '🚀 开始冲刺',
+      0x0ea5e9,
+      '#ffffff',
+      '26px',
+      () => this._startGame(),
+      12
+    );
 
     // 次按钮：全球排行榜
-    this._createButton(width / 2, 764, 340, 54, '🏆 全球排行榜', 0x1e293b, '#facc15', '20px', () => {
-      this._openLeaderboardModal();
-    });
+    this.leaderboardBtn = this._createButton(
+      width / 2,
+      764,
+      350,
+      56,
+      '🏆 全球排行榜',
+      0x1e293b,
+      '#facc15',
+      '20px',
+      () => this._openLeaderboardModal(),
+      12
+    );
 
     // 操控说明
-    this.add.text(width / 2, 855, '手机：手指按住拖动或点左右半屏移动\n电脑：方向键 ← / → 或 A / D，空格快速开局', {
+    this.add.text(width / 2, 858, '手机：手指按住拖动或点左右半屏移动\n电脑：方向键 ← / → 或 A / D，空格快速开局', {
       fontSize: '15px',
       color: '#64748b',
       align: 'center',
       lineSpacing: 8
     }).setOrigin(0.5);
 
-    // 键盘快捷开局
+    // 键盘快捷开局与切换
     this.input.keyboard?.on('keydown-SPACE', () => {
       if (!this.leaderboardContainer) this._startGame();
     });
     this.input.keyboard?.on('keydown-ENTER', () => {
       if (!this.leaderboardContainer) this._startGame();
     });
+    this.input.keyboard?.on('keydown-LEFT', () => {
+      if (!this.leaderboardContainer) this._changeLevel(-1);
+    });
+    this.input.keyboard?.on('keydown-RIGHT', () => {
+      if (!this.leaderboardContainer) this._changeLevel(1);
+    });
     this.input.keyboard?.on('keydown-M', () => this._toggleSound());
+
+    this._syncDebugState();
   }
 
   update(_time, delta) {
@@ -176,17 +235,44 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
+  _changeLevel(delta) {
+    const maxLvl = Math.max(1, Number(platformBridge.config.maxLevels || 12));
+    const next = Phaser.Math.Clamp(this.selectedLevel + delta, 1, maxLvl);
+    if (next !== this.selectedLevel) {
+      this.selectedLevel = next;
+      this.levelLabel.setText(`挑战关卡：第 ${this.selectedLevel} 关`);
+      this.tweens.add({
+        targets: this.levelLabel,
+        scaleX: 1.12,
+        scaleY: 1.12,
+        duration: 90,
+        yoyo: true
+      });
+      this._syncDebugState();
+    }
+  }
+
   _toggleSound() {
     const next = !synthAudio.enabled;
-    synthAudio.setEnabled(next);
-    if (next) synthAudio.playClick();
+    try {
+      synthAudio.setEnabled(next);
+      if (next) {
+        synthAudio.ensureContext();
+        synthAudio.playClick();
+      }
+    } catch (_) {}
     this.soundBtn.label.setText(next ? '🔊 音效开' : '🔇 音效关');
-    platformBridge.saveCloudProgress({ soundEnabled: next });
+    this._syncDebugState();
+    try {
+      platformBridge.saveCloudProgress({ soundEnabled: next }).catch(() => {});
+    } catch (_) {}
   }
 
   _startGame() {
-    synthAudio.ensureContext();
-    synthAudio.playClick();
+    try {
+      synthAudio.ensureContext();
+      synthAudio.playClick();
+    } catch (_) {}
     this.scene.start('GameScene', {
       level: this.selectedLevel,
       score: 0,
@@ -196,13 +282,14 @@ export class MenuScene extends Phaser.Scene {
 
   async _openLeaderboardModal() {
     if (this.leaderboardContainer) return;
-    synthAudio.playClick();
     const { width, height } = GAME_DESIGN;
 
     const container = this.add.container(0, 0).setDepth(50);
     this.leaderboardContainer = container;
+    this._syncDebugState();
 
-    const mask = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72).setInteractive();
+    const mask = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.72)
+      .setInteractive(new Phaser.Geom.Rectangle(0, 0, width, height), Phaser.Geom.Rectangle.Contains);
     const panel = this.add.rectangle(width / 2, height / 2, 460, 620, 0x0f172a, 0.98);
     panel.setStrokeStyle(2, 0x38bdf8, 0.8);
 
@@ -217,21 +304,31 @@ export class MenuScene extends Phaser.Scene {
       color: '#94a3b8'
     }).setOrigin(0.5);
 
-    const closeBtnBg = this.add.rectangle(width / 2, height / 2 + 258, 220, 48, 0x0ea5e9).setInteractive({ useHandCursor: true });
+    const closeHit = new Phaser.Geom.Rectangle(-14, -14, 248, 80);
+    const closeBtnBg = this.add.rectangle(width / 2, height / 2 + 258, 220, 52, 0x0ea5e9)
+      .setInteractive({ hitArea: closeHit, hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
     const closeBtnTxt = this.add.text(width / 2, height / 2 + 258, '关闭', {
       fontSize: '19px',
       fontStyle: 'bold',
       color: '#ffffff'
     }).setOrigin(0.5);
     closeBtnBg.on('pointerdown', () => {
-      synthAudio.playClick();
+      try {
+        synthAudio.playClick();
+      } catch (_) {}
       container.destroy();
       this.leaderboardContainer = null;
+      this._syncDebugState();
     });
 
     container.add([mask, panel, header, loadingText, closeBtnBg, closeBtnTxt]);
 
-    const res = await platformBridge.fetchLeaderboard(10);
+    let res;
+    try {
+      res = await platformBridge.fetchLeaderboard(10);
+    } catch (_) {
+      res = { source: 'local_fallback', entries: [] };
+    }
     if (!this.leaderboardContainer) return;
     loadingText.destroy();
 
@@ -243,7 +340,7 @@ export class MenuScene extends Phaser.Scene {
     ).setOrigin(0.5);
     container.add(subTip);
 
-    if (!res.entries.length) {
+    if (!res.entries || !res.entries.length) {
       const empty = this.add.text(width / 2, height / 2, '暂无上榜成绩，快去挑战吧！', {
         fontSize: '18px',
         color: '#94a3b8'
@@ -272,20 +369,38 @@ export class MenuScene extends Phaser.Scene {
     });
   }
 
-  _createButton(x, y, w, h, text, bgColor, textColor, fontSize, onClick) {
-    const bg = this.add.rectangle(x, y, w, h, bgColor, 1).setInteractive({ useHandCursor: true });
+  _createButton(x, y, w, h, text, bgColor, textColor, fontSize, onClick, hitPad = 12) {
+    const bg = this.add.rectangle(x, y, w, h, bgColor, 1).setDepth(10);
     bg.setStrokeStyle(2, 0x38bdf8, 0.45);
+    const hitArea = new Phaser.Geom.Rectangle(-hitPad, -hitPad, w + hitPad * 2, h + hitPad * 2);
+    bg.setInteractive({
+      hitArea,
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
+
     const label = this.add.text(x, y, text, {
       fontSize,
       fontStyle: 'bold',
       color: textColor
-    }).setOrigin(0.5);
+    }).setOrigin(0.5).setDepth(11);
 
     bg.on('pointerover', () => bg.setAlpha(0.88));
     bg.on('pointerout', () => bg.setAlpha(1));
     bg.on('pointerdown', () => {
-      synthAudio.playClick();
-      onClick();
+      bg.setAlpha(0.75);
+      this.time.delayedCall(90, () => {
+        if (bg.active) bg.setAlpha(1);
+      });
+      try {
+        synthAudio.ensureContext();
+        synthAudio.playClick();
+      } catch (_) {}
+      try {
+        onClick();
+      } catch (err) {
+        console.error('按钮交互回调异常：', err);
+      }
     });
     return { bg, label };
   }

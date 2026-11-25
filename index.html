@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#070b1a" />
   <title>星际冲刺 Star Dash - HTML5 休闲游戏母版</title>
@@ -15,33 +16,45 @@
       -webkit-tap-highlight-color: transparent;
       user-select: none;
       -webkit-user-select: none;
+      -webkit-touch-callout: none;
     }
     html, body {
+      position: fixed;
+      inset: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
+      overscroll-behavior: none;
+      overscroll-behavior-y: none;
       background: radial-gradient(circle at 50% 25%, #111c3d 0%, #070b1a 75%);
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
       touch-action: none;
+      pointer-events: auto;
     }
-    #game-container {
+    /* 使用 block 布局交由 Phaser ScaleManager 统一计算居中与缩放，避免 Flexbox 叠加 margin 造成 iOS 触控坐标偏移 */
+    #app {
+      position: fixed;
+      inset: 0;
+      display: block;
       width: 100%;
       height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      pointer-events: auto;
     }
     canvas {
       display: block;
+      touch-action: none;
+      pointer-events: auto;
       box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
-      border-radius: 6px;
     }
   </style>
   <!-- 门户 SDK 占位标记：由打包脚本 scripts/package-portal.mjs 按目标渠道按需注入，避免跨渠道冗余外链 -->
   <!-- PORTAL_SDK_INJECT -->
 </head>
 <body>
-  <div id="game-container"></div>
+  <div id="app"></div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

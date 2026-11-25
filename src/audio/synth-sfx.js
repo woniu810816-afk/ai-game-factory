@@ -1,6 +1,7 @@
 /**
  * 零外部音频依赖的 Web Audio 合成音效引擎
  * 优势：大幅缩减 Poki / CrazyGames 打包体积，且在广告播放期间可即时一键静音。
+ * 已全面增加 iOS Safari 音频限制容错，任何音频异常绝不阻塞交互与场景跳转。
  */
 
 export class SynthAudio {
@@ -11,16 +12,20 @@ export class SynthAudio {
   }
 
   ensureContext() {
-    if (typeof window === 'undefined') return null;
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return null;
-    if (!this.ctx) {
-      this.ctx = new AudioCtx();
+    try {
+      if (typeof window === 'undefined') return null;
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return null;
+      if (!this.ctx) {
+        this.ctx = new AudioCtx();
+      }
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      return this.ctx;
+    } catch (_) {
+      return null;
     }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
-    }
-    return this.ctx;
   }
 
   setEnabled(flag) {
@@ -29,13 +34,15 @@ export class SynthAudio {
 
   setAdMuted(flag) {
     this.adMuted = !!flag;
-    if (this.ctx) {
-      if (this.adMuted && this.ctx.state === 'running') {
-        this.ctx.suspend().catch(() => {});
-      } else if (!this.adMuted && this.enabled && this.ctx.state === 'suspended') {
-        this.ctx.resume().catch(() => {});
+    try {
+      if (this.ctx) {
+        if (this.adMuted && this.ctx.state === 'running') {
+          this.ctx.suspend().catch(() => {});
+        } else if (!this.adMuted && this.enabled && this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
       }
-    }
+    } catch (_) {}
   }
 
   canPlay() {
@@ -44,26 +51,30 @@ export class SynthAudio {
 
   playTone(freqStart, freqEnd, durationSec, type = 'sine', gainPeak = 0.14) {
     if (!this.canPlay()) return;
-    const ctx = this.ensureContext();
-    if (!ctx) return;
+    try {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
 
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freqStart, now);
-    if (freqEnd !== freqStart) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(40, freqEnd), now + durationSec);
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freqStart, now);
+      if (freqEnd !== freqStart) {
+        osc.frequency.exponentialRampToValueAtTime(Math.max(40, freqEnd), now + durationSec);
+      }
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(gainPeak, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + durationSec + 0.02);
+    } catch (_) {
+      // iOS 静音/未解锁限制时静默降级，绝不中断游戏逻辑
     }
-
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(gainPeak, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + durationSec + 0.02);
   }
 
   playClick() {

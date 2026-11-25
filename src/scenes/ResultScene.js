@@ -196,18 +196,31 @@ export class ResultScene extends Phaser.Scene {
     }
   }
 
-  _createButton(x, y, w, h, text, bgColor, textColor, fontSize, onClick) {
-    const bg = this.add.rectangle(x, y, w, h, bgColor, 1).setInteractive({ useHandCursor: true });
+  _createButton(x, y, w, h, text, bgColor, textColor, fontSize, onClick, hitPad = 12) {
+    const bg = this.add.rectangle(x, y, w, h, bgColor, 1).setDepth(10);
+    const hitArea = new Phaser.Geom.Rectangle(-hitPad, -hitPad, w + hitPad * 2, h + hitPad * 2);
+    bg.setInteractive({
+      hitArea,
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true
+    });
     const label = this.add.text(x, y, text, {
       fontSize,
       fontStyle: 'bold',
       color: textColor
-    }).setOrigin(0.5);
+    }).setOrigin(0.5).setDepth(11);
     bg.on('pointerover', () => bg.setAlpha(0.88));
     bg.on('pointerout', () => bg.setAlpha(1));
     bg.on('pointerdown', () => {
-      synthAudio.playClick();
-      onClick();
+      try {
+        synthAudio.ensureContext();
+        synthAudio.playClick();
+      } catch (_) {}
+      try {
+        onClick();
+      } catch (err) {
+        console.error('结算按钮回调异常：', err);
+      }
     });
     return { bg, label };
   }

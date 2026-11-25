@@ -15,15 +15,39 @@ window.addEventListener('keydown', (e) => {
   }
 }, { passive: false });
 
+// 阻止 iOS Safari 页面级下拉橡皮筋滚动，但不拦截 canvas 内部触控事件传递
+document.addEventListener('touchmove', (e) => {
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+
+// 暴露轻量只读运行态快照，便于移动端验收测试与排障（绝不含任何密钥）
+window.__GAME_STATE__ = {
+  scene: 'BootScene',
+  selectedLevel: 1,
+  level: 1,
+  score: 0,
+  soundEnabled: true,
+  leaderboardOpen: false
+};
+
 const gameConfig = {
   type: Phaser.AUTO,
-  parent: 'game-container',
+  parent: 'app',
   width: GAME_DESIGN.width,
   height: GAME_DESIGN.height,
   backgroundColor: '#070b1a',
   scale: {
     mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+    width: GAME_DESIGN.width,
+    height: GAME_DESIGN.height,
+    autoRound: true
+  },
+  input: {
+    activePointers: 3,
+    touch: {
+      capture: true
+    }
   },
   physics: {
     default: 'arcade',
@@ -36,6 +60,37 @@ const gameConfig = {
 };
 
 const game = new Phaser.Game(gameConfig);
+
+// 高分屏（Retina DPR=3）与 iOS Safari 地址栏动态伸缩时，强制保持视觉尺寸与输入边界 1:1 严格对齐
+function syncCanvasMetrics() {
+  try {
+    if (!game || !game.scale) return;
+    game.scale.refresh();
+    game.scale.updateBounds();
+    if (game.canvas) {
+      game.canvas.style.touchAction = 'none';
+      game.canvas.style.pointerEvents = 'auto';
+    }
+  } catch (_) {}
+}
+
+window.addEventListener('resize', syncCanvasMetrics);
+window.addEventListener('orientationchange', () => setTimeout(syncCanvasMetrics, 120));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncCanvasMetrics);
+}
+
+// 捕获阶段在每次触摸/点击前刷新 canvasBounds，彻底杜绝 iOS Safari 动态工具栏导致的热区偏移
+window.addEventListener('touchstart', () => {
+  try {
+    game.scale?.updateBounds?.();
+  } catch (_) {}
+}, { capture: true, passive: true });
+window.addEventListener('pointerdown', () => {
+  try {
+    game.scale?.updateBounds?.();
+  } catch (_) {}
+}, { capture: true, passive: true });
 
 // 广告期间自动静音并暂停游戏主循环，广告结束立即恢复（Poki / CrazyGames 必检项）
 platformBridge.setAudioPauseHandlers({

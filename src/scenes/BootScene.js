@@ -35,23 +35,39 @@ export class BootScene extends Phaser.Scene {
       repeat: -1
     });
 
+    if (typeof window !== 'undefined' && window.__GAME_STATE__) {
+      window.__GAME_STATE__.scene = 'BootScene';
+    }
+
     this._generateProceduralTextures();
 
-    Promise.resolve()
-      .then(() => platformBridge.init())
-      .then(() => platformBridge.loadCloudSave())
-      .then((save) => {
-        synthAudio.setEnabled(save.soundEnabled !== false);
+    const withTimeout = (promise, ms) => Promise.race([
+      promise,
+      new Promise((resolve) => setTimeout(resolve, ms))
+    ]);
+
+    const enterMenu = (save) => {
+      const safeSave = save || platformBridge.getLocalSave();
+      try {
+        synthAudio.setEnabled(safeSave.soundEnabled !== false);
+      } catch (_) {}
+      try {
         platformBridge.loadingFinished();
-        statusText.setText('加载完成！');
-        this.time.delayedCall(180, () => {
-          this.scene.start('MenuScene', { save });
-        });
-      })
-      .catch(() => {
-        platformBridge.loadingFinished();
-        this.scene.start('MenuScene', { save: platformBridge.getLocalSave() });
+      } catch (_) {}
+      try {
+        this.scale?.updateBounds?.();
+      } catch (_) {}
+      statusText.setText('加载完成！');
+      this.time.delayedCall(120, () => {
+        this.scene.start('MenuScene', { save: safeSave });
       });
+    };
+
+    Promise.resolve()
+      .then(() => withTimeout(platformBridge.init().catch(() => {}), 1200))
+      .then(() => withTimeout(platformBridge.loadCloudSave().catch(() => platformBridge.getLocalSave()), 1200))
+      .then((save) => enterMenu(save))
+      .catch(() => enterMenu(platformBridge.getLocalSave()));
   }
 
   _generateProceduralTextures() {
